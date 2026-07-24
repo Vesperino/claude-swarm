@@ -28,9 +28,14 @@ One question at a time if something is genuinely unclear; otherwise proceed.
 
 ## 2. Write the role file
 
-Target directory — **project copy wins**: if `<cwd>/.claude/skills/swarm/templates/roles/`
-exists, write there; otherwise `~/.claude/skills/swarm/templates/roles/`. Tell the user which
-one you used. File: `<slug>.md` in this exact shape (the judge reads it verbatim):
+Target directory — first match wins, tell the user which one you used:
+1. `<cwd>/docs/swarm/roles/` if it exists (project roles — read by the judge on every
+   harness; created by init),
+2. `<cwd>/.claude/skills/swarm/templates/roles/` if a project fork exists (Claude Code),
+3. otherwise the sibling of THIS skill — `../swarm/templates/roles/` relative to the
+   directory containing this SKILL.md (resolves for `~/.claude/skills`, `~/.codex/skills`
+   and plugin installs alike).
+File: `<slug>.md` in this exact shape (the judge reads it verbatim):
 
 ```markdown
 # Role: <slug>

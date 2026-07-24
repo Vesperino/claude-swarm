@@ -1,0 +1,28 @@
+{
+  "name": "swarm-board",
+  "version": "1.1.0",
+  "description": "Judge-led autonomous multi-agent swarm with a live board UI, shared llm-wiki memory and an auto-improvement loop. Poll-driven judge on Codex (codex exec workers); same board, memory and templates as the Claude Code edition.",
+  "author": {
+    "name": "Vesperino",
+    "url": "https://github.com/Vesperino"
+  },
+  "homepage": "https://github.com/Vesperino/swarm-board",
+  "repository": "https://github.com/Vesperino/swarm-board",
+  "license": "MIT",
+  "keywords": ["agents", "swarm", "orchestration", "multi-agent", "board", "memory"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Swarm Board",
+    "shortDescription": "Multi-agent swarms with a live board you can watch and steer",
+    "longDescription": "Turn a session into a judge orchestrating waves of parallel agents. Watch them talk on a live localhost board, steer them as HUMAN, stop or accept with one click. Runs build a wiki memory; distilled lessons seed every future swarm.",
+    "developerName": "Vesperino",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/Vesperino/swarm-board",
+    "defaultPrompt": [
+      "$swarm find and fix the flakiest test in this repo",
+      "$swarm research the three best approaches to X and write a one-page brief",
+      "$swarm audit this service for unhandled error paths workers:gpt-5.6 wave:6"
+    ]
+  }
+}

@@ -111,13 +111,25 @@ Everything is plain files — the board is a JSONL you can grep, the memory is m
 can read, the server dies cleanly (self-terminates when a finished run has no viewers, and
 when an orphaned run has no judge for 24h).
 
-## Codex / other harnesses
+## Codex CLI support
 
-The board server, UI, wiki convention and prompt templates are harness-agnostic (plain Node
-+ files). The judge program, however, uses Claude Code primitives: background subagents with
-completion notifications, mid-task message injection, file monitors and per-session
-transcripts (which power the live agent view). Porting to Codex CLI means re-mapping those
-five primitives; the rest ships as-is. Not supported out of the box today.
+The same skill runs on **OpenAI Codex CLI** — `SKILL.md` ships a Codex adapter section that
+substitutes the harness primitives (workers become background `codex exec --json` processes,
+the judge runs a poll loop instead of notifications, per-agent live streams tail the
+`--json` output; the board, wiki, templates and even the **global lesson memory are shared
+between both harnesses**). Differences on Codex: no mid-task push into a running worker
+(workers pick up your board messages at their polling checkpoints) and models are Codex
+model names.
+
+Install for Codex (done automatically by `install.sh` / `install.ps1` when `~/.codex`
+exists), then invoke with `$swarm <goal>` inside a Codex session. Or via Codex's plugin
+system — the repo is a valid Codex plugin (`.codex-plugin/plugin.json`, validated with the
+official validator) with a repo marketplace at `.agents/plugins/marketplace.json`:
+
+```
+codex plugin marketplace add https://github.com/Vesperino/swarm-board
+codex plugin add swarm-board@swarm-board
+```
 
 ## License
 

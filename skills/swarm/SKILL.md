@@ -1,12 +1,18 @@
 ---
 name: swarm
-description: Judge-led autonomous multi-agent swarm with a live board UI, shared llm-wiki memory and an auto-improvement loop. Use when the user invokes /swarm <goal>, /swarm resume <runId>, /swarm init (copy the skill into the current project for per-project customization), or asks to run an agent swarm/hive on a goal. Options inside the prompt: workers:<opus|sonnet|haiku|fable> rounds:<N> wave:<N, max 20> minutes:<N>.
+description: "Judge-led autonomous multi-agent swarm with a live board UI, shared llm-wiki memory and an auto-improvement loop. Use when the user invokes /swarm <goal>, /swarm resume <runId>, /swarm init (copy the skill into the current project for per-project customization), or asks to run an agent swarm/hive on a goal. Options inside the prompt - workers:<model> rounds:<N> wave:<N, max 20> minutes:<N>."
 ---
 
 # Swarm — judge program
 
 You (this session) are the **judge**. You never do object-level work yourself — you plan, spawn,
 synthesize, decide, and keep the board honest. Announce: "Swarm starting — I'm the judge."
+
+This program runs on two harnesses. The board server, UI, wiki protocol and templates are
+identical everywhere; only the agent primitives differ. Sections below describe the
+**Claude Code** primitives (Agent tool, task notifications, SendMessage, Monitor, TaskStop);
+if you are running inside **Codex CLI**, apply the substitutions from the
+"Codex CLI adapter" section near the end wherever those primitives are mentioned.
 
 Skill directory (this file, `server.mjs`, `templates/`): the directory containing this SKILL.md.
 Global wiki: `~/.claude/swarm/wiki` (Windows: `%USERPROFILE%\.claude\swarm\wiki`).
@@ -33,6 +39,8 @@ Global wiki: `~/.claude/swarm/wiki` (Windows: `%USERPROFILE%\.claude\swarm\wiki`
 3. Write `RUN_DIR/goal.md`: the goal verbatim; a `## Success criteria` list you derive
    (measurable, checkable — critics will judge against these); a `## Config` line with the
    parsed options; `## Run` with runId, project dir, start time.
+   If `<cwd>/docs/swarm/swarm.config.md` exists, read it first — it may set project defaults
+   (models, wave/rounds, extra judge rules); explicit options in the invocation win over it.
 4. Write `RUN_DIR/state.json` (SINGLE LINE, exact shape; `maxRounds` = the parsed `rounds:`
    option, or `null` for no limit — the default):
    `{"goal":"...","runId":"...","projectDir":"...","status":"running","round":0,"maxRounds":R,"wave":W,"workersModel":"...","minutes":M_or_null,"active":[],"judge":{"model":"<your model>","transcript":"<path>"},"startedAt":"ISO","updatedAt":"ISO"}`
@@ -85,8 +93,10 @@ Workers only poll the board at their own checkpoints; the push path goes through
    facts/sources), `analyst` (compare, structure, decide), `coder` (implement in the
    project), `tester` (verify by running things), `synthesizer` (merge results into a
    deliverable draft in `artifacts/`). **Custom roles:** also scan `templates/roles/*.md`
-   in the skill directory — each file defines an extra role (its body describes when to use
-   it and what to append to the worker's task); include the relevant ones in your menu.
+   in the skill directory AND `<cwd>/docs/swarm/roles/*.md` in the project (project roles
+   win on name clashes; they work on every harness) — each file defines an extra role (its
+   body describes when to use it and what to append to the worker's task); include the
+   relevant ones in your menu.
    First round of a fresh goal: usually researchers + one analyst. Later rounds: whatever
    the failures, critic objections and HUMAN messages demand. Give workers **disjoint**
    tasks. Post the plan to the board (type `round`) BEFORE spawning: who, what, why — and in
@@ -193,6 +203,27 @@ one, so after init this project runs its own copy.
    back to the global skill), and point at `templates/roles/` as the place to add custom
    agent roles (example included: `semantic-reviewer`; new ones are authored with the
    `/swarm-role` command).
+
+## Codex CLI adapter (substitutions when running under Codex)
+Codex has no background-subagent API, no mid-task message injection and no file watcher —
+the loop becomes poll-driven. Substitute:
+1. **Spawn workers** (§2.3): background `codex exec` child processes, one per worker:
+   `codex exec --json --full-auto -C "<projectDir>" "<full worker prompt>" > "<RUN_DIR>/tr/<id>.jsonl" 2>> "<RUN_DIR>/tr/<id>.err" & echo $! > "<RUN_DIR>/tr/<id>.pid"`
+   (create `RUN_DIR/tr/` at setup). The `--json` stdout stream IS the live transcript.
+   **MANDATORY:** set `active[].transcript` to `<RUN_DIR>/tr/<id>.jsonl` (forward slashes)
+   already at wave-plan registration — the path is known before the spawn, the server waits
+   for the file to appear, and without it the board cannot show the agent's live view
+   (clicking the card falls back to a plain feed filter).
+2. **Wait for results** (§2.4): no notifications — poll every 30-60s: `kill -0 $(cat pid)`
+   per worker (exit = done, read the tail of its jsonl for the final agent_message), plus
+   board tail, plus control flags. `minutes`/round checks in the same loop.
+3. **Live steering** (§1b): DOES NOT EXIST — no Monitor, no SendMessage. Do not promise
+   mid-task pushes. Workers pick up HUMAN lines at their own board-polling checkpoints;
+   urgent input folds into the next wave's prompts. Your poll loop is the judge-side reader.
+4. **Stopping agents** (§3, §5): `kill -INT $(cat "<RUN_DIR>/tr/<id>.pid")` instead of TaskStop.
+5. **Judge transcript** (§1.4): the newest `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`.
+6. **Models**: `workers:` is a Codex model name (or omit for the session default); the
+   global wiki path stays `~/.claude/swarm/wiki` — one shared memory across both harnesses.
 
 ## Judge conduct
 - Every decision goes on the board BEFORE acting on it. The human must be able to follow the

@@ -109,10 +109,28 @@ function readBody(req) {
 }
 
 // Turns one transcript JSONL line into 0..n lightweight display events.
+// Understands two formats: Claude Code session transcripts and
+// `codex exec --json` event streams (thread/item/turn events).
 function agentEvents(line) {
   const out = [];
   let j;
   try { j = JSON.parse(line); } catch { return out; }
+  // Codex exec --json format
+  if (typeof j.type === 'string' && (j.type.startsWith('item.') || j.type.startsWith('thread.') || j.type.startsWith('turn.'))) {
+    if (j.type === 'thread.started') out.push({ kind: 'info', label: 'started', detail: '' });
+    else if (j.type === 'turn.completed') out.push({ kind: 'info', label: 'turn done', detail: '' });
+    else if (j.item && typeof j.item === 'object') {
+      const it = j.item;
+      const detail = it.text || it.command || it.cmd || it.path || it.title || '';
+      const label = it.type === 'agent_message' ? 'says'
+        : it.type === 'reasoning' ? 'thinks'
+        : (it.type || 'item');
+      const kind = it.type === 'agent_message' ? 'text'
+        : it.type === 'command_execution' ? 'tool' : 'result';
+      if (detail) out.push({ kind, label, detail: String(detail).slice(0, 220) });
+    }
+    return out;
+  }
   const content = j.message && Array.isArray(j.message.content) ? j.message.content : [];
   for (const c of content) {
     if (c.type === 'tool_use') {
@@ -315,9 +333,11 @@ const server = createServer(async (req, res) => {
           ? (st.judge && st.judge.transcript ? { transcript: st.judge.transcript } : null)
           : (st.active || []).find(a => a.id === id);
       } catch {}
-      if (!entry || !entry.transcript || !fs.existsSync(entry.transcript)) {
+      if (!entry || !entry.transcript) {
         return json(res, 404, { ok: false, error: 'no live transcript for ' + id });
       }
+      // The file may not exist yet (registered at plan time, created on spawn)
+      // - keep the stream open and start tailing once it appears.
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -325,7 +345,9 @@ const server = createServer(async (req, res) => {
       });
       res.write('retry: 2000\n\n');
       const file = entry.transcript;
-      let off = Math.max(0, fs.statSync(file).size - 65536);
+      let size0 = 0;
+      try { size0 = fs.statSync(file).size; } catch {}
+      let off = Math.max(0, size0 - 65536);
       let firstRead = off > 0;
       const readNew = () => {
         try {

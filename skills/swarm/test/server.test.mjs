@@ -208,6 +208,21 @@ test('agentfeed 404s for unknown agent', async () => {
   assert.equal(r.status, 404);
 });
 
+test('agentfeed waits for a not-yet-created transcript file', async () => {
+  const tr = path.join(runDir, 'late-transcript.jsonl');
+  fs.rmSync(tr, { force: true });
+  fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
+    goal: 'g', status: 'running', round: 1,
+    active: [{ id: 'w-late', role: 'worker', task: 't', transcript: tr }],
+  }));
+  const waiter = sseWait(base + '/agentfeed/w-late', t => t.includes('late bird'), 6000);
+  await new Promise(r => setTimeout(r, 1200));
+  fs.writeFileSync(tr,
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'late bird checks in' } }) + '\n');
+  const text = await waiter;
+  assert.ok(text.includes('late bird'));
+});
+
 test('GET /usage sums token usage from judge and subagent transcripts', async () => {
   const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-usage-'));
   const jt = path.join(tdir, 'session.jsonl');
@@ -223,6 +238,22 @@ test('GET /usage sums token usage from judge and subagent transcripts', async ()
   const j = await (await fetch(base + '/usage')).json();
   assert.equal(j.in, 100 + 20 + 30 + 1000);
   assert.equal(j.out, 50 + 5 + 200);
+});
+
+test('agentfeed understands Codex exec --json event format', async () => {
+  const tr = path.join(runDir, 'codex-transcript.jsonl');
+  fs.writeFileSync(tr,
+    JSON.stringify({ type: 'thread.started', thread_id: 'th_1' }) + '\n' +
+    JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', command: 'npm test', exit_code: 0 } }) + '\n' +
+    JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'Suite is green, posting results.' } }) + '\n' +
+    JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 5 } }) + '\n');
+  fs.writeFileSync(path.join(runDir, 'state.json'), JSON.stringify({
+    goal: 'g', status: 'running', round: 1,
+    active: [{ id: 'wx-codex', role: 'worker', model: 'gpt-5.6', task: 't', transcript: tr }],
+  }));
+  const text = await sseWait(base + '/agentfeed/wx-codex',
+    t => t.includes('npm test') && t.includes('Suite is green'));
+  assert.match(text, /event: act/);
 });
 
 test('agentfeed/judge streams from state.judge.transcript', async () => {
