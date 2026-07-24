@@ -230,6 +230,20 @@ the loop becomes poll-driven. Substitute:
 6. **Models**: `workers:` is a Codex model name (or omit for the session default); the
    global wiki path stays `~/.claude/swarm/wiki` — one shared memory across both harnesses.
 
+## Updating this skill (when the user asks to update/upgrade swarm)
+The installed skill directory is a plain copy, NOT a git checkout — never run git commands
+inside it. Source of truth: https://github.com/Vesperino/swarm-board
+1. **Script install** (default): clone or pull the source, then rerun the installer — it
+   overwrites `~/.claude/skills/{swarm,swarm-init,swarm-role}` and `~/.codex/skills/*`:
+   `git clone https://github.com/Vesperino/swarm-board && cd swarm-board && ./install.sh`
+   (existing clone: `git pull && ./install.sh`; Windows PowerShell: `.\install.ps1`).
+2. **Plugin installs**: Claude Code → `/plugin marketplace update`; Codex →
+   re-add `swarm-board@swarm-board` after refreshing the marketplace.
+3. **Project forks** (`.claude/skills/swarm` with `SOURCE.md`): run `/swarm-init` in that
+   project — it compares versions and asks what to overwrite.
+Do not restart a live run's board server mid-run for an update unless asked; new runs pick
+up the new engine automatically.
+
 ## Judge conduct
 - Every decision goes on the board BEFORE acting on it. The human must be able to follow the
   run from the board alone; keep chat to: the URL at start, blockers needing the human, and
