@@ -230,19 +230,26 @@ the loop becomes poll-driven. Substitute:
 6. **Models**: `workers:` is a Codex model name (or omit for the session default); the
    global wiki path stays `~/.claude/swarm/wiki` — one shared memory across both harnesses.
 
-## Updating this skill (when the user asks to update/upgrade swarm)
-The installed skill directory is a plain copy, NOT a git checkout — never run git commands
-inside it. Source of truth: https://github.com/Vesperino/swarm-board
-1. **Script install** (default): clone or pull the source, then rerun the installer — it
-   overwrites `~/.claude/skills/{swarm,swarm-init,swarm-role}` and `~/.codex/skills/*`:
-   `git clone https://github.com/Vesperino/swarm-board && cd swarm-board && ./install.sh`
-   (existing clone: `git pull && ./install.sh`; Windows PowerShell: `.\install.ps1`).
-2. **Plugin installs**: Claude Code → `/plugin marketplace update`; Codex →
-   re-add `swarm-board@swarm-board` after refreshing the marketplace.
-3. **Project forks** (`.claude/skills/swarm` with `SOURCE.md`): run `/swarm-init` in that
-   project — it compares versions and asks what to overwrite.
-Do not restart a live run's board server mid-run for an update unless asked; new runs pick
-up the new engine automatically.
+## Updating this skill (only when the user explicitly asks)
+Transparency rules first: update ONLY on the user's explicit request; before touching
+anything, state what will be replaced and from where, and let the user confirm. Never
+fetch or overwrite skill files silently. The installed skill directory is a plain copy,
+NOT a git checkout — do not run git commands inside it.
+
+Preferred path — the harness's own marketplace mechanism (auditable, user-consented):
+- **Claude Code plugin install**: the user runs `/plugin marketplace update`, then
+  reinstalls/updates the plugin from their marketplace listing.
+- **Codex plugin install**: the user refreshes their marketplace and re-adds the plugin
+  (`codex plugin marketplace update` / `codex plugin add <plugin>@<marketplace>`).
+- **Script install**: update from the SAME repository the user originally installed from
+  (their clone of the marketplace repo — check `SOURCE.md` or ask the user where that is;
+  do not assume a URL): pull it and rerun its `install.sh` / `install.ps1`. The upstream
+  project page is listed in the plugin manifest (`homepage`) for reference.
+- **Project forks** (`.claude/skills/swarm` with `SOURCE.md`): run `/swarm-init` in that
+  project — it compares versions and asks what to overwrite.
+
+Do not restart a live run's board server mid-run for an update; new runs pick up the new
+engine automatically.
 
 ## Judge conduct
 - Every decision goes on the board BEFORE acting on it. The human must be able to follow the
