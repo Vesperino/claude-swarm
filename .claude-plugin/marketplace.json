@@ -1,0 +1,14 @@
+{
+  "name": "swarm-board",
+  "owner": { "name": "Arkadiusz Bialecki" },
+  "description": "Marketplace for the Swarm plugin - judge-led multi-agent swarms with a live board.",
+  "plugins": [
+    {
+      "name": "swarm",
+      "source": "./",
+      "description": "Judge-led autonomous multi-agent swarm with a live board UI, shared llm-wiki memory and an auto-improvement loop.",
+      "version": "1.0.0",
+      "author": { "name": "Arkadiusz Bialecki" }
+    }
+  ]
+}

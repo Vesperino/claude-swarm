@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm Board</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='white'/><rect width='100' height='100' fill='black' rx='20' style='mix-blend-mode:destination-over'/></svg>">
+<!--
+  Swarm Board — live UI (design by mock merge 2026-07-23; original mock in docs/design-assets/).
+  Data layer: SSE /events (board + state), /wikitree, /wiki/<scope>/<path>, /agentfeed/<id>,
+  POST /post, POST /control.
+-->
+<style>
+  :root {
+    --bg:#000; --panel:#0a0a0a; --panel2:#111; --hover:#0f0f0f;
+    --border:#262626; --border2:#333; --border3:#525252;
+    --text:#ededed; --soft:#d4d4d4; --dim:#a1a1a1; --faint:#666; --ghost:#525252;
+    --judge:#f5a623; --worker:#52a9ff; --critic:#ff6480; --human:#2fd180; --system:#888;
+    --blue:#52a9ff; --red:#e5484d; --red-t:#ff6166; --green:#2fd180; --amber:#f5a623;
+    --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+  }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; }
+  body {
+    background:var(--bg); color:var(--text); font:14px/1.5 var(--sans);
+    display:grid; grid-template-rows:auto 1fr auto; grid-template-columns:1fr 296px;
+    grid-template-areas:"header header" "feed side" "footer footer"; height:100vh;
+  }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:5px; border:2px solid var(--bg); }
+  ::-webkit-scrollbar-track { background:transparent; }
+  button { font:inherit; }
+  :is(button,a,input,[tabindex]):focus-visible { outline:2px solid var(--faint); outline-offset:2px; border-radius:6px; }
+
+  /* ---------- header ---------- */
+  header { grid-area:header; display:flex; align-items:center; gap:14px;
+    padding:0 20px; height:56px; background:var(--bg); border-bottom:1px solid var(--border); }
+  header h1 { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; color:#fff; white-space:nowrap; }
+  header h1::before { content:""; width:8px; height:8px; border-radius:999px; background:#fff; }
+  header h1 small { color:var(--faint); font-weight:400; font-size:14px; }
+  .hsep { color:var(--border2); }
+  #goal { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; font-size:13px; }
+  .pill { font:12px var(--mono); padding:3px 12px; border-radius:999px;
+    border:1px solid var(--border2); color:var(--dim); white-space:nowrap; }
+  #status { display:inline-flex; align-items:center; gap:7px; color:var(--text); }
+  #status::before { content:""; width:7px; height:7px; border-radius:999px; background:var(--faint); }
+  #status.running::before { background:var(--green); }
+  #status.done::before { background:var(--blue); }
+  #status.accepted::before { background:var(--amber); }
+  #status.stopped::before { background:var(--critic); }
+  #status.failed { background:var(--red); border-color:var(--red); color:#fff; }
+  #status.failed::before { background:#fff; }
+  #status.error { color:var(--red-t); border-style:dashed; border-color:rgba(229,72,77,.55); }
+  #status.error::before { background:var(--red-t); }
+  @media (prefers-reduced-motion: no-preference) {
+    #status.running::before { animation:pulse 1.6s infinite; }
+    @keyframes pulse { 50% { opacity:.25; } }
+  }
+  #filterPill { display:none; align-items:center; gap:7px; color:var(--text); padding-right:6px; }
+  #filterPill.on { display:inline-flex; }
+  #filterName { font-weight:600; }
+  #filterClear { cursor:pointer; width:16px; height:16px; border-radius:999px; background:#1f1f1f;
+    display:inline-flex; align-items:center; justify-content:center; font-size:10px; color:var(--dim); }
+  #filterClear:hover { background:var(--border2); color:#fff; }
+
+  /* ---------- feed ---------- */
+  #feedwrap { grid-area:feed; position:relative; min-width:0; }
+  #feed { position:absolute; inset:0; overflow-y:auto; padding:14px 20px 24px;
+    display:grid; grid-template-columns:max-content max-content 1fr; gap:0 18px;
+    align-content:start; font:12.5px/1.6 var(--mono); }
+  .entry { grid-column:1/-1; display:grid; grid-template-columns:subgrid;
+    padding:6px 10px; border-radius:6px; border:1px solid transparent; }
+  .entry:hover { background:var(--hover); }
+  .entry .time { color:var(--faint); font-size:11.5px; padding-top:1px; }
+  .entry .from { font-weight:600; cursor:pointer; overflow:hidden; text-overflow:ellipsis; }
+  .entry .from:hover { text-decoration:underline; text-underline-offset:3px; }
+  .entry[data-role=judge]  .from { color:var(--judge); }
+  .entry[data-role=worker] .from { color:var(--worker); }
+  .entry[data-role=critic] .from { color:var(--critic); }
+  .entry[data-role=human]  .from { color:var(--human); }
+  .entry[data-role=system] .from { color:var(--system); }
+  .entry[data-role=human] { background:rgba(47,209,128,.05); }
+  .entry.learning { background:rgba(47,209,128,.04); border-color:rgba(47,209,128,.3); }
+  .entry .body { min-width:0; display:grid; grid-template-columns:max-content 1fr; gap:0 10px; }
+  .entry .type { color:var(--dim); font:500 10px/1.5 var(--sans); letter-spacing:.04em;
+    border:1px solid var(--border2); border-radius:999px; padding:1px 8px; height:fit-content; white-space:nowrap; }
+  .entry .type.learning { color:var(--human); border-color:rgba(47,209,128,.4); }
+  .entry .text { display:block; color:var(--soft); white-space:pre-wrap; word-break:break-word; }
+  .entry .text.clamp { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+  .morebtn { margin-top:4px; color:var(--faint); font:11.5px var(--sans); cursor:pointer; width:fit-content; }
+  .morebtn:hover { color:var(--text); }
+  .refs { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+  .refchip { font-size:11px; color:var(--text); background:var(--panel); border:1px solid var(--border2);
+    border-radius:6px; padding:2.5px 9px; cursor:pointer; display:inline-flex; gap:7px; align-items:center; }
+  .refchip::before { content:"▤"; color:var(--faint); }
+  .refchip:hover { border-color:var(--faint); background:var(--panel2); }
+  code { background:#1a1a1a; border:1px solid var(--border); border-radius:4px; padding:0 4px; font-size:.92em; font-family:var(--mono); }
+  .mention { color:#fff; font-weight:600; }
+  .kw { font-weight:700; }
+  .kw.ok { color:var(--green); } .kw.bad { color:var(--red-t); }
+  .kw.warn { color:var(--amber); } .kw.info { color:var(--blue); }
+  .enum { color:var(--faint); font-weight:600; }
+  .entry .text a { color:var(--blue); text-decoration:underline; text-underline-offset:3px; word-break:break-all; }
+  .wikilink { color:var(--blue); text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer; }
+  /* phase dividers: round / final entries */
+  .entry.phase { display:flex; align-items:center; gap:12px; margin:16px 0 8px; padding:0 10px; border:none; background:none; }
+  .entry.phase:hover { background:none; }
+  .entry.phase .time { flex:none; }
+  .entry.phase .from { font-size:11.5px; color:var(--dim) !important; flex:none; }
+  .entry.phase .body { display:inline-flex; align-items:center; gap:10px; min-width:0; }
+  .entry.phase .type { color:var(--amber); border-color:rgba(245,166,35,.4); text-transform:uppercase; letter-spacing:.08em; }
+  .entry.phase .text { color:var(--text); font:600 12px var(--sans); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .entry.phase::after { content:""; flex:1; border-top:1px solid var(--border); }
+  #jumpPill { position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+    font:600 12px var(--sans); color:var(--text); background:#1a1a1a; border:1px solid var(--border2);
+    border-radius:999px; padding:6px 16px; cursor:pointer; box-shadow:0 8px 24px rgba(0,0,0,.7); z-index:3; display:none; }
+  #jumpPill:hover { background:var(--border); border-color:var(--border3); }
+  #jumpPill.on { display:block; }
+
+  /* ---------- sidebar ---------- */
+  aside { grid-area:side; background:var(--bg); border-left:1px solid var(--border);
+    overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:20px; }
+  aside h2 { font:500 11px var(--sans); letter-spacing:.06em; color:var(--faint); text-transform:uppercase; }
+  .shead { display:flex; align-items:center; justify-content:space-between; margin-bottom:9px; }
+  .count { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--dim);
+    border:1px solid var(--border2); border-radius:999px; padding:1px 9px; }
+  .count::before { content:""; width:6px; height:6px; border-radius:999px; background:var(--green); }
+  @media (prefers-reduced-motion: no-preference) { .count::before { animation:pulse 1.6s infinite; } }
+  #agents { display:flex; flex-direction:column; gap:6px; }
+  .agent { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:9px 11px; cursor:pointer; }
+  .agent:hover { border-color:var(--border3); }
+  .agent .arow { display:flex; align-items:center; gap:8px; font:12px var(--mono); }
+  .agent b { font-weight:600; }
+  .agent[data-role=worker] b { color:var(--worker); } .agent[data-role=critic] b { color:var(--critic); }
+  .agent .role { color:var(--faint); font-size:10.5px; }
+  .agent .model { margin-left:auto; font:10px var(--sans); color:var(--dim); background:var(--bg);
+    border:1px solid var(--border2); border-radius:5px; padding:1px 6px; }
+  .agent .abtn { flex:none; width:20px; height:20px; display:inline-flex; align-items:center;
+    justify-content:center; border:1px solid var(--border2); border-radius:5px; color:var(--dim);
+    font-size:10px; cursor:pointer; }
+  .agent .abtn:hover { color:#fff; border-color:var(--faint); }
+  .agent .abtn.stop:hover { color:var(--red-t); border-color:rgba(229,72,77,.55); }
+  .agent .trow { display:flex; gap:8px; align-items:baseline; margin-top:4px; }
+  .agent .task { color:var(--dim); font:11.5px var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .agent .live { color:var(--faint); font-size:10px; flex:none; }
+  .agent .lastl { display:block; color:var(--faint); font:10.5px var(--mono); margin-top:3px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .agent .lastl:empty { display:none; }
+  .agent.none { cursor:default; border-style:dashed; text-align:center; color:var(--faint); font:11.5px var(--sans); line-height:1.6; }
+  .agent.none:hover { border-color:var(--border); }
+  #tree { font:12px var(--mono); display:flex; flex-direction:column; gap:1px; }
+  #tree .grp { color:var(--faint); font:500 10.5px var(--sans); margin:10px 0 3px; text-transform:uppercase; letter-spacing:.06em; }
+  #tree .grp:first-child { margin-top:0; }
+  #tree .fold { color:var(--dim); padding:3px 8px 1px; }
+  #tree .fold::before { content:"▾ "; color:var(--ghost); }
+  #tree a { display:block; color:var(--soft); text-decoration:none; padding:3px 8px; border-radius:6px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #tree a::before { content:"▤ "; color:var(--ghost); }
+  #tree a.sub { padding-left:26px; }
+  #tree a:hover { background:var(--hover); color:#fff; }
+  #tree .empty { display:block; background:var(--panel); border:1px dashed var(--border2); border-radius:8px;
+    padding:13px; text-align:center; color:var(--faint); font:11.5px/1.6 var(--sans); font-style:normal; margin-top:2px; }
+
+  /* ---------- viewer ---------- */
+  #viewer { position:fixed; inset:0 0 0 auto; width:min(680px,90vw); background:var(--panel);
+    border-left:1px solid var(--border); box-shadow:-16px 0 50px rgba(0,0,0,.7);
+    overflow-y:auto; z-index:10; padding:0 24px 22px; display:none; }
+  #viewer.open { display:block; }
+  #viewer .vhead { position:sticky; top:0; background:var(--panel); z-index:2;
+    display:flex; justify-content:space-between; align-items:center; gap:12px;
+    padding:16px 0 12px; margin-bottom:14px; border-bottom:1px solid var(--border); }
+  #vpath { font:12px var(--mono); color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #vclose { background:none; border:1px solid var(--border2); color:var(--dim); border-radius:6px;
+    padding:4px 12px; cursor:pointer; font-size:12px; }
+  #vclose:hover { border-color:var(--faint); color:#fff; }
+  #vbody { font-size:13.5px; line-height:1.75; color:var(--soft); max-width:600px; }
+  #vbody h1 { margin:10px 0 12px; font-size:22px; font-weight:650; color:#fff; letter-spacing:-.02em; }
+  #vbody h2 { margin:24px 0 8px; font-size:16px; font-weight:650; color:#fff; letter-spacing:-.01em; }
+  #vbody h3 { margin:18px 0 6px; font-size:14px; font-weight:650; color:#fff; }
+  #vbody p, #vbody ul, #vbody pre { margin:10px 0; }
+  #vbody li { margin:4px 0 4px 22px; }
+  #vbody pre { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:14px 16px;
+    overflow-x:auto; font:12px/1.6 var(--mono); color:var(--soft); }
+  #vbody img { max-width:100%; border:1px solid var(--border); border-radius:8px; display:block; margin:8px 0; }
+  #vbody .agtask { color:var(--dim); font-size:12.5px; font-style:normal; margin:2px 0 12px; }
+  #agstream { display:flex; flex-direction:column; gap:3px; font:12px/1.55 var(--mono); }
+  #agstream .act { display:grid; grid-template-columns:2px max-content 1fr; gap:11px;
+    padding:4px 10px 4px 6px; border-radius:6px; word-break:break-word; }
+  #agstream .act::before { content:""; background:var(--border2); border-radius:2px; opacity:.8; }
+  #agstream .act b { font-weight:600; white-space:nowrap; color:var(--dim); }
+  #agstream .act span { color:var(--dim); min-width:0; }
+  #agstream .act.tool::before { background:var(--blue); } #agstream .act.tool b { color:var(--blue); }
+  #agstream .act.tool span { color:var(--soft); }
+  #agstream .act.text { background:var(--hover); } #agstream .act.text::before { background:var(--soft); }
+  #agstream .act.text b, #agstream .act.text span { color:var(--soft); }
+  #agstream .act.info { background:rgba(245,166,35,.06); }
+  #agstream .act.info::before { background:var(--amber); }
+  #agstream .act.info b, #agstream .act.info span { color:var(--amber); }
+
+  /* ---------- composer ---------- */
+  footer { grid-area:footer; position:relative; display:flex; gap:10px; padding:14px 20px;
+    background:var(--bg); border-top:1px solid var(--border); align-items:stretch; }
+  .msgwrap { flex:1; display:flex; align-items:center; gap:10px; border:1px solid var(--border2);
+    background:var(--panel); border-radius:8px; padding:0 14px; }
+  .msgwrap:focus-within { border-color:var(--faint); }
+  #msg { flex:1; background:none; border:none; outline:none; color:var(--text);
+    font:12.5px var(--mono); height:38px; }
+  #msg::placeholder { color:var(--ghost); }
+  .kbd { color:var(--ghost); font-size:10.5px; border:1px solid var(--border2); border-radius:4px; padding:1px 6px; flex:none; }
+  footer button { border-radius:8px; padding:0 20px; font-weight:600; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  #send { background:#1a1a1a; color:var(--text); border:1px solid var(--border2); padding:0 22px; }
+  #send:hover { background:var(--border); border-color:var(--border3); }
+  .vr { width:1px; background:var(--border); margin:3px 6px; }
+  #stopBtn { background:none; border:1px solid rgba(229,72,77,.55); color:var(--red-t); }
+  #stopBtn:hover:not(:disabled) { background:rgba(229,72,77,.12); }
+  #stopBtn i { font-style:normal; font-size:10px; }
+  #acceptBtn { background:none; border:1px solid rgba(47,209,128,.5); color:var(--green); }
+  #acceptBtn:hover:not(:disabled) { background:rgba(47,209,128,.1); }
+  footer button:disabled { opacity:.35; cursor:default; }
+  #mention { position:absolute; bottom:66px; left:20px; background:var(--panel); border:1px solid var(--border2);
+    border-radius:10px; box-shadow:0 -10px 36px rgba(0,0,0,.8); overflow:hidden; z-index:20;
+    min-width:230px; padding:5px; display:none; }
+  #mention div { padding:6px 12px; border-radius:6px; cursor:pointer; font:12.5px var(--mono);
+    display:flex; justify-content:space-between; gap:16px; }
+  #mention div::after { content:"↵"; color:var(--faint); font-size:10.5px; }
+  #mention div:hover, #mention div.sel { background:#1f1f1f; }
+  #mention div[data-m=all], #mention div[data-m=HUMAN] { color:#fff; }
+  #mention div[data-m=judge] { color:var(--judge); }
+  #mention div.worker { color:var(--worker); } #mention div.critic { color:var(--critic); }
+
+  /* ---------- confirm ---------- */
+  #confirmWrap { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(2px);
+    z-index:30; display:none; align-items:center; justify-content:center; }
+  #confirmWrap.on { display:flex; }
+  .cbox { background:var(--panel); border:1px solid var(--border2); border-radius:12px;
+    padding:20px 22px; width:380px; box-shadow:0 24px 70px rgba(0,0,0,.9); }
+  .cbox h3 { color:#fff; font-weight:600; font-size:15px; }
+  .cbox p { color:var(--dim); font-size:13px; margin:8px 0 16px; line-height:1.55; }
+  .cbtns { display:flex; gap:8px; justify-content:flex-end; font-size:13px; }
+  .cbtns button { border-radius:8px; padding:7px 15px; cursor:pointer; font-size:13px; }
+  .ccancel { background:none; color:var(--text); border:1px solid var(--border2); font-weight:500; }
+  .ccancel:hover { border-color:var(--faint); }
+  .cstop { color:#fff; background:var(--red); border:none; font-weight:600; }
+  .cstop:hover { background:#f2555a; }
+  .caccept { color:#000; background:var(--green); border:none; font-weight:600; }
+  .caccept:hover { background:#4adb92; }
+
+  @media (max-width:1100px) { body { grid-template-columns:1fr 250px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Swarm <small>Board</small></h1>
+  <span class="hsep">/</span>
+  <span id="goal" title=""></span>
+  <span class="pill" id="filterPill">filter: <b id="filterName"></b> <span id="filterClear">×</span></span>
+  <span class="pill" id="tokens" title="session tokens (judge + all agents), counted from transcripts by the server">tok —</span>
+  <span class="pill" id="round">round —</span>
+  <span class="pill" id="status">connecting</span>
+</header>
+
+<div id="feedwrap">
+  <div id="feed" aria-live="polite"></div>
+  <div id="jumpPill">↓ new messages</div>
+</div>
+
+<aside>
+  <section>
+    <div class="shead"><h2>Agents</h2><span class="count" id="agentCount">0 live</span></div>
+    <div id="agents"></div>
+  </section>
+  <section>
+    <div class="shead"><h2>Wiki</h2></div>
+    <div id="tree"></div>
+  </section>
+</aside>
+
+<div id="viewer">
+  <div class="vhead"><code id="vpath"></code><button id="vclose">Close ⎋</button></div>
+  <div id="vbody"></div>
+</div>
+
+<footer>
+  <div id="mention"></div>
+  <div class="msgwrap">
+    <input id="msg" placeholder="Message the swarm as HUMAN — @ to address an agent, Enter to send" aria-label="Message to the swarm" autocomplete="off">
+    <span class="kbd">↵</span>
+  </div>
+  <button id="send">Post</button>
+  <div class="vr"></div>
+  <button id="stopBtn"><i>■</i>Stop run</button>
+  <button id="acceptBtn"><i>✓</i>Accept result</button>
+</footer>
+
+<div id="confirmWrap"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const feed = $('feed');
+let maxSeq = 0;
+let filterFrom = null;
+let lastActive = [];
+let lastJudge = null;
+let agentEs = null;
+const lastMsg = {};                 // from -> latest board text, shown on agent cards
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Inline formatting: `code`, **bold**, @mentions, [[wiki links]].
+function fmtInline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|\s)@([\w-]+)/g, '$1<span class="mention">@$2</span>')
+    .replace(/\[\[([^\]]+)\]\]/g, '<span class="wikilink" data-wl="$1">[[$1]]</span>');
+}
+
+// Feed formatting: fmtInline + links, file paths, status keywords, enumeration breaks.
+// Agents write dense one-paragraph reports; this makes them scannable.
+function fmtFeed(s) {
+  let t = esc(s);
+  t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+  t = t.replace(/(https?:\/\/[^\s<>"')]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  t = t.replace(/(^|[\s(])((?:[\w.-]+[\\/])+[\w.-]+\.\w{1,5})(?=[\s,;:.)]|$)/gm, '$1<code>$2</code>');
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  t = t.replace(/(^|\s)@([\w-]+)/g, '$1<span class="mention">@$2</span>');
+  t = t.replace(/\[\[([^\]]+)\]\]/g, '<span class="wikilink" data-wl="$1">[[$1]]</span>');
+  t = t.replace(/(^|\n)(DONE|VERIFIED|PASS|GREEN|ACK|Ack)\b/g, '$1<span class="kw ok">$2</span>');
+  t = t.replace(/(^|\n)(FAIL|FATAL|ERROR|CRITICAL|BLOCKER)\b/g, '$1<span class="kw bad">$2</span>');
+  t = t.replace(/(^|\n)(WARNING|TODO|NOTE|KEY)\b/g, '$1<span class="kw warn">$2</span>');
+  t = t.replace(/(^|\n)(Starting|Progress|Step \d+|VERIFY|Plan)\b/g, '$1<span class="kw info">$2</span>');
+  t = t.replace(/\b(BLOCKER|CRITICAL|FATAL)(?!<\/span>)\b/g, '<span class="kw bad">$1</span>');
+  // 2+ "(n)" markers -> break each onto its own line for scannability
+  if ((t.match(/\(\d\)\s/g) || []).length >= 2) {
+    t = t.replace(/\s\((\d)\)\s/g, '<br><span class="enum">($1)</span> ');
+  }
+  return t;
+}
+
+// Tiny markdown renderer for the wiki viewer.
+function renderMd(src) {
+  const out = [];
+  const lines = src.split(/\r?\n/);
+  let inCode = false, buf = [];
+  const flushP = () => { if (buf.length) { out.push('<p>' + fmtInline(buf.join(' ')) + '</p>'); buf = []; } };
+  for (const line of lines) {
+    if (line.startsWith('```')) { flushP(); out.push(inCode ? '</pre>' : '<pre>'); inCode = !inCode; continue; }
+    if (inCode) { out.push(esc(line) + '\n'); continue; }
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    if (h) { flushP(); out.push(`<h${h[1].length}>` + fmtInline(h[2]) + `</h${h[1].length}>`); continue; }
+    if (/^\s*[-*]\s+/.test(line)) { flushP(); out.push('<li>' + fmtInline(line.replace(/^\s*[-*]\s+/, '')) + '</li>'); continue; }
+    if (!line.trim()) { flushP(); continue; }
+    buf.push(line);
+  }
+  flushP(); if (inCode) out.push('</pre>');
+  return out.join('');
+}
+
+function entryMatchesFilter(el) {
+  return !filterFrom || el.classList.contains('phase') ||
+    el.dataset.from === filterFrom || el.textContent.includes('@' + filterFrom) || el.textContent.includes('@all');
+}
+function applyFilter() {
+  document.querySelectorAll('.entry').forEach(el => { el.style.display = entryMatchesFilter(el) ? '' : 'none'; });
+  $('filterPill').classList.toggle('on', !!filterFrom);
+  if (filterFrom) $('filterName').textContent = filterFrom;
+}
+function setFilter(name) {
+  filterFrom = filterFrom === name ? null : name;
+  applyFilter();
+  if (!filterFrom) feed.scrollTop = feed.scrollHeight;
+}
+$('filterClear').onclick = () => { filterFrom = null; applyFilter(); };
+
+function nearBottom() { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80; }
+feed.addEventListener('scroll', () => $('jumpPill').classList.toggle('on', !nearBottom()));
+$('jumpPill').onclick = () => { feed.scrollTop = feed.scrollHeight; $('jumpPill').classList.remove('on'); };
+
+function addEntry(m) {
+  if (m.seq && m.seq <= maxSeq) return;       // skip SSE replay duplicates on reconnect
+  if (m.seq) maxSeq = m.seq;
+  const stick = nearBottom();
+  const el = document.createElement('div');
+  el.className = 'entry';
+  el.dataset.role = m.role || 'system';
+  el.dataset.from = m.from || '';
+  if (m.from && m.text) {
+    lastMsg[m.from] = String(m.text).slice(0, 90);
+    const card = document.querySelector(`#agents .agent[data-id="${CSS.escape(m.from)}"] .lastl`);
+    if (card) card.textContent = lastMsg[m.from];
+  }
+  const phase = m.type === 'round' || m.type === 'final';
+  if (phase) el.classList.add('phase');
+  if (m.type === 'learning') el.classList.add('learning');
+  const refs = (m.refs || []).map(r => `<span class="refchip" data-ref="${esc(r)}">${esc(r)}</span>`).join('');
+  const lines = String(m.text || '').split('\n');
+  const long = !phase && lines.length > 5;
+  el.innerHTML =
+    `<span class="time">${esc((m.ts || '').slice(11, 19))}</span>` +
+    `<span class="from">${esc(m.from || '?')}</span>` +
+    `<div class="body"><span class="type ${esc(m.type || 'msg')}">${esc(m.type || 'msg')}</span>` +
+    `<div style="min-width:0"><span class="text${long ? ' clamp' : ''}">${fmtFeed(m.text)}</span>` +
+    (long ? `<div class="morebtn">Show ${lines.length - 4} more lines</div>` : '') +
+    (refs ? `<div class="refs">${refs}</div>` : '') + `</div></div>`;
+  if (!entryMatchesFilter(el)) el.style.display = 'none';
+  feed.appendChild(el);
+  if (stick) feed.scrollTop = feed.scrollHeight;
+  else $('jumpPill').classList.add('on');
+}
+
+function setState(s) {
+  $('goal').textContent = s.goal || '';
+  $('goal').title = s.goal || '';
+  $('round').textContent = `round ${s.round ?? '—'}/${s.maxRounds ?? '∞'}`;
+  const stEl = $('status');
+  stEl.textContent = s.status || '?';
+  stEl.className = 'pill';
+  stEl.classList.add(s.status || 'unknown');
+  lastActive = s.active || [];
+  lastJudge = s.judge || null;
+  $('agentCount').textContent = lastActive.length + ' live';
+  const judgeCard = lastJudge && lastJudge.transcript ?
+    `<div class="agent" data-id="judge" data-role="judge" title="click → live view">` +
+    `<div class="arow"><b style="color:var(--judge)">judge</b> <span class="role">orchestrator</span>` +
+    (lastJudge.model ? `<span class="model">${esc(lastJudge.model)}</span>` : '') + `</div>` +
+    `<div class="trow"><span class="task">plans waves · reads results · gates success</span>` +
+    `<span class="live">live ↗</span></div>` +
+    `<span class="lastl">${esc(lastMsg['judge'] || '')}</span></div>` : '';
+  $('agents').innerHTML = judgeCard + (lastActive.map(a =>
+    `<div class="agent" data-id="${esc(a.id)}" data-role="${esc(a.role)}" title="click → live view">` +
+    `<div class="arow"><b>${esc(a.id)}</b> <span class="role">${esc(a.role)}</span>` +
+    (a.model ? `<span class="model">${esc(a.model)}</span>` : '') +
+    `<span class="abtn" data-act="correct" data-aid="${esc(a.id)}" title="correct this agent (prefills @${esc(a.id)})">✎</span>` +
+    `<span class="abtn stop" data-act="agentstop" data-aid="${esc(a.id)}" title="stop this agent">■</span></div>` +
+    `<div class="trow"><span class="task" title="${esc(a.task)}">${esc(a.task)}</span><span class="live">live ↗</span></div>` +
+    `<span class="lastl">${esc(lastMsg[a.id] || '')}</span></div>`
+  ).join('') || (judgeCard ? '' : '<div class="agent none">No active agents.<br><span style="color:var(--dim)">The judge spawns workers each round.</span></div>'));
+  const done = ['done', 'stopped', 'failed', 'accepted'].includes(s.status);
+  $('stopBtn').disabled = done; $('acceptBtn').disabled = done;
+  loadTree();
+}
+
+function renderTree(t) {
+  const link = (scope, f, sub) =>
+    `<a href="#" class="${sub ? 'sub' : ''}" data-scope="${scope}" data-file="${esc(f)}">${esc(f.split('/').pop())}</a>`;
+  const group = (name, scope, files) => {
+    // folder-style grouping for path-like names
+    const flat = [], folders = {};
+    (files || []).forEach(f => {
+      const i = f.indexOf('/');
+      if (i < 0) flat.push(f); else (folders[f.slice(0, i + 1)] = folders[f.slice(0, i + 1)] || []).push(f);
+    });
+    let html = `<div class="grp">${name}</div>`;
+    flat.forEach(f => html += link(scope, f));
+    for (const dir of Object.keys(folders).sort()) {
+      html += `<div class="fold">${esc(dir)}</div>`;
+      folders[dir].forEach(f => html += link(scope, f, true));
+    }
+    if (!(files || []).length) html += '<span class="empty">Nothing published yet.<br>Agents write notes here as they work.</span>';
+    return html;
+  };
+  $('tree').innerHTML =
+    group('run wiki', 'run', t.run) + group('artifacts', 'artifacts', t.artifacts) + group('global wiki', 'global', t.global);
+}
+
+async function loadTree() {
+  try { renderTree(await (await fetch('/wikitree')).json()); }
+  catch { $('tree').innerHTML = '<span class="empty">wiki unavailable</span>'; }
+}
+
+function closeAgentStream() {
+  if (agentEs) { agentEs.close(); agentEs = null; }
+}
+
+async function openWiki(scope, file) {
+  closeAgentStream();
+  $('vpath').textContent = scope + ':' + file;
+  const url = `/wiki/${scope}/` + file.split('/').map(encodeURIComponent).join('/');
+  if (/\.(png|jpe?g|gif|webp|svg)$/i.test(file)) {
+    $('vbody').innerHTML = `<img src="${url}" alt="${esc(file)}">`;
+  } else {
+    const r = await fetch(url);
+    $('vbody').innerHTML = r.ok ? renderMd(await r.text()) : renderMd('# ' + file + '\n\nnot found');
+  }
+  $('viewer').classList.add('open');
+}
+
+// Live "what is this agent doing" view — streams summarized tool calls from /agentfeed/<id>.
+function openAgentView(a) {
+  closeAgentStream();
+  $('vpath').textContent = a.id + ' · ' + a.role + ' · ' + (a.model || 'inherit');
+  $('vbody').innerHTML = '<p class="agtask">' + esc(a.task || '') + '</p><div id="agstream"></div>';
+  $('viewer').classList.add('open');
+  agentEs = new EventSource('/agentfeed/' + encodeURIComponent(a.id));
+  agentEs.addEventListener('act', e => {
+    try {
+      const ev = JSON.parse(e.data);
+      const d = document.createElement('div');
+      d.className = 'act ' + (ev.kind || 'text');
+      d.innerHTML = '<b>' + esc(ev.label) + '</b><span>' + esc(ev.detail) + '</span>';
+      const box = document.getElementById('agstream');
+      box.appendChild(d);
+      while (box.children.length > 300) box.removeChild(box.firstChild);
+      $('viewer').scrollTop = $('viewer').scrollHeight;
+    } catch {}
+  });
+  agentEs.onerror = () => {
+    const box = document.getElementById('agstream');
+    if (box) {
+      const d = document.createElement('div');
+      d.className = 'act info';
+      d.innerHTML = '<b>stream ended</b><span>agent finished or transcript unavailable — its posts stay on the board</span>';
+      box.appendChild(d);
+    }
+    closeAgentStream();
+  };
+}
+$('vclose').onclick = () => { closeAgentStream(); $('viewer').classList.remove('open'); };
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeAgentStream(); $('viewer').classList.remove('open'); }
+});
+
+// clicks: agents, senders, expand, ref chips, tree links, wiki links
+document.addEventListener('click', e => {
+  const ab = e.target.closest('.abtn');
+  if (ab) {
+    if (ab.dataset.act === 'correct') {
+      $('msg').value = '@' + ab.dataset.aid + ' ';
+      $('msg').focus();
+    } else if (ab.dataset.act === 'agentstop') {
+      askAgentStop(ab.dataset.aid);
+    }
+    return;
+  }
+  const ag = e.target.closest('#agents .agent');
+  if (ag && ag.dataset.id) {
+    if (ag.dataset.id === 'judge' && lastJudge) {
+      openAgentView({ id: 'judge', role: 'judge', model: lastJudge.model,
+        task: 'plans waves · reads results · gates success', transcript: lastJudge.transcript });
+      return;
+    }
+    const a = lastActive.find(x => x.id === ag.dataset.id);
+    if (a && a.transcript) openAgentView(a); else if (a) setFilter(a.id);
+    return;
+  }
+  const fr = e.target.closest('.entry .from');
+  if (fr && !fr.closest('.phase')) { setFilter(fr.textContent); return; }
+  const more = e.target.closest('.morebtn');
+  if (more) {
+    const txt = more.parentElement.querySelector('.text');
+    if (!more.dataset.label) more.dataset.label = more.textContent;
+    const clamped = txt.classList.toggle('clamp');
+    more.textContent = clamped ? more.dataset.label : 'Show less';
+    return;
+  }
+  const ref = e.target.closest('[data-ref]');
+  if (ref) { const r = ref.dataset.ref;
+    if (r.startsWith('global:')) openWiki('global', r.slice(7));
+    else if (r.startsWith('artifacts/')) openWiki('artifacts', r.slice(10));
+    else openWiki('run', r.replace(/^wiki\//, ''));
+    return; }
+  const tl = e.target.closest('#tree a');
+  if (tl) { e.preventDefault(); openWiki(tl.dataset.scope, tl.dataset.file); return; }
+  const wl = e.target.closest('.wikilink');
+  if (wl) { // resolve [[name]] against the run tree by filename match
+    fetch('/wikitree').then(r => r.json()).then(t => {
+      const n = wl.dataset.wl.toLowerCase().replaceAll(' ', '-');
+      const hit = t.run.find(f => f.toLowerCase().includes(n));
+      if (hit) return openWiki('run', hit);
+      const art = (t.artifacts || []).find(f => f.toLowerCase().includes(n));
+      if (art) return openWiki('artifacts', art);
+      const idx = t.run.find(f => f.endsWith('INDEX.md'));
+      if (idx) openWiki('run', idx);
+    });
+  }
+});
+
+// composer + @mention autocomplete — messages go to the server; SSE echoes them back
+async function post(text) {
+  await fetch('/post', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: 'HUMAN', role: 'human', type: 'msg', text }) });
+}
+$('send').onclick = () => { const t = $('msg').value.trim(); if (t) { post(t); $('msg').value = ''; $('mention').style.display = 'none'; } };
+
+function insertMention(name) {
+  $('msg').value = $('msg').value.replace(/@[\w-]*$/, '@' + name + ' ');
+  $('mention').style.display = 'none';
+  $('msg').focus();
+}
+
+// keyboard: arrows move the selection, Enter/Tab insert it; Enter otherwise sends
+$('msg').addEventListener('keydown', e => {
+  const box = $('mention');
+  const open = box.style.display === 'block';
+  if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+    e.preventDefault();
+    const items = [...box.querySelectorAll('[data-m]')];
+    if (!items.length) return;
+    let i = items.findIndex(d => d.classList.contains('sel'));
+    if (i >= 0) items[i].classList.remove('sel');
+    i = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+    items[i].classList.add('sel');
+    return;
+  }
+  if (open && (e.key === 'Enter' || e.key === 'Tab')) {
+    const sel = box.querySelector('[data-m].sel') || box.querySelector('[data-m]');
+    if (sel) { e.preventDefault(); insertMention(sel.dataset.m); return; }
+  }
+  if (e.key === 'Enter') $('send').onclick();
+  if (e.key === 'Escape') box.style.display = 'none';
+});
+$('msg').addEventListener('input', () => {
+  const m = $('msg').value.match(/(^|\s)@([\w-]*)$/);
+  const box = $('mention');
+  if (!m) { box.style.display = 'none'; return; }
+  const pre = m[2].toLowerCase();
+  // only live addressees: broadcast, the judge, and currently active agents
+  const cands = ['all', 'judge', ...lastActive.map(a => a.id)]
+    .filter(x => x.toLowerCase().startsWith(pre)).slice(0, 8);
+  if (!cands.length) { box.style.display = 'none'; return; }
+  const roleOf = id => (lastActive.find(a => a.id === id) || {}).role || '';
+  box.innerHTML = cands.map((c, i) => `<div data-m="${esc(c)}" class="${roleOf(c)}${i === 0 ? ' sel' : ''}">@${esc(c)}</div>`).join('');
+  box.style.display = 'block';
+});
+$('mention').addEventListener('mousedown', e => {
+  const d = e.target.closest('[data-m]');
+  if (!d) return;
+  e.preventDefault();
+  insertMention(d.dataset.m);
+});
+
+// STOP / ACCEPT with styled confirms — POST /control; the judge drives the state change
+function askConfirm(kind) {
+  const stop = kind === 'stop';
+  const w = $('confirmWrap');
+  w.innerHTML = `<div class="cbox">
+    <h3>${stop ? 'Stop the run?' : 'Accept the result?'}</h3>
+    <p>${stop ? 'All agents halt. The board and wiki are preserved; lessons still get distilled.'
+              : 'The current result is accepted as final and the run wraps up.'}</p>
+    <div class="cbtns"><button class="ccancel">Cancel</button>
+    <button class="${stop ? 'cstop' : 'caccept'}">${stop ? 'Stop run' : 'Accept'}</button></div></div>`;
+  w.classList.add('on');
+  w.onclick = e => { if (e.target === w || e.target.closest('.ccancel')) w.classList.remove('on'); };
+  w.querySelector(stop ? '.cstop' : '.caccept').onclick = async () => {
+    w.classList.remove('on');
+    await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: kind }) });
+  };
+}
+$('stopBtn').onclick = () => askConfirm('stop');
+$('acceptBtn').onclick = () => askConfirm('accept');
+
+// per-agent stop: flag on the server, the judge TaskStops the agent on wake
+function askAgentStop(id) {
+  const w = $('confirmWrap');
+  w.innerHTML = `<div class="cbox">
+    <h3>Stop ${esc(id)}?</h3>
+    <p>Only this agent halts; the judge folds its task into the next wave. The rest of the swarm keeps working.</p>
+    <div class="cbtns"><button class="ccancel">Cancel</button>
+    <button class="cstop">Stop agent</button></div></div>`;
+  w.classList.add('on');
+  w.onclick = e => { if (e.target === w || e.target.closest('.ccancel')) w.classList.remove('on'); };
+  w.querySelector('.cstop').onclick = async () => {
+    w.classList.remove('on');
+    await fetch('/control', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'agent-stop', id }) });
+  };
+}
+
+// ---- live data layer: SSE ----
+const es = new EventSource('/events');
+es.addEventListener('board', e => {
+  try { addEntry(JSON.parse(e.data)); }
+  catch (err) { console.error('bad board line:', err, e.data); }
+});
+es.addEventListener('state', e => {
+  try { setState(JSON.parse(e.data)); }
+  catch (err) {
+    console.error('bad state.json:', err, e.data);
+    $('status').textContent = 'state error';
+    $('status').className = 'pill error';
+  }
+});
+es.onerror = () => { $('status').textContent = 'reconnecting…'; $('status').className = 'pill'; };
+loadTree();
+
+// session token counter - computed by the server from transcripts, zero LLM cost
+const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
+async function loadUsage() {
+  try {
+    const u = await (await fetch('/usage')).json();
+    if (u.in || u.out) $('tokens').textContent = 'tok ' + fmtTok(u.in) + ' in · ' + fmtTok(u.out) + ' out';
+  } catch {}
+}
+loadUsage();
+setInterval(loadUsage, 15000);
+</script>
+</body>
+</html>

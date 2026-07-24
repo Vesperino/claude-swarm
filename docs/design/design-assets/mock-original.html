@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Swarm Board</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='34' fill='white'/><rect width='100' height='100' fill='black' rx='20' style='mix-blend-mode:destination-over'/></svg>">
+<!--
+  Swarm Board — static design mock (single file, no external requests).
+  JS contract selectors are all present and unchanged:
+    #goal #round #status #filterPill #filterName #filterClear
+    #feed .entry[data-role][data-from] .time .from .body .type .text .refchip[data-ref]
+    #agents .agent[data-id] (b, .role, .task) · #tree .grp a[data-scope][data-file] .empty
+    #viewer(.open) .vhead #vpath #vclose #vbody · #agstream .act.(tool|text|result|info)
+    #msg #send #stopBtn #acceptBtn #mention [data-m] · .wikilink[data-wl]
+  Mock-only additions (safe to keep or replace when merging the live layer):
+    #jumpPill, #confirmWrap, .entry.phase (divider styling for round/final),
+    .morebtn (collapse affordance), .model (model badge), sample data + mock handlers at the
+    bottom of the script (section marked MOCK DATA / MOCK WIRING).
+-->
+<style>
+  :root {
+    --bg:#000; --panel:#0a0a0a; --panel2:#111; --hover:#0f0f0f;
+    --border:#262626; --border2:#333; --border3:#525252;
+    --text:#ededed; --soft:#d4d4d4; --dim:#a1a1a1; --faint:#666; --ghost:#525252;
+    --judge:#f5a623; --worker:#52a9ff; --critic:#ff6480; --human:#2fd180; --system:#888;
+    --blue:#52a9ff; --red:#e5484d; --red-t:#ff6166; --green:#2fd180; --amber:#f5a623;
+    --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,'Segoe UI',sans-serif;
+  }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; }
+  body {
+    background:var(--bg); color:var(--text); font:14px/1.5 var(--sans);
+    display:grid; grid-template-rows:auto 1fr auto; grid-template-columns:1fr 296px;
+    grid-template-areas:"header header" "feed side" "footer footer"; height:100vh;
+  }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-thumb { background:var(--border2); border-radius:5px; border:2px solid var(--bg); }
+  ::-webkit-scrollbar-track { background:transparent; }
+  button { font:inherit; }
+  :is(button,a,input,[tabindex]):focus-visible { outline:2px solid var(--faint); outline-offset:2px; border-radius:6px; }
+
+  /* ---------- header ---------- */
+  header { grid-area:header; display:flex; align-items:center; gap:14px;
+    padding:0 20px; height:56px; background:var(--bg); border-bottom:1px solid var(--border); }
+  header h1 { display:flex; align-items:center; gap:10px; font-size:14px; font-weight:600; color:#fff; white-space:nowrap; }
+  header h1::before { content:""; width:8px; height:8px; border-radius:999px; background:#fff; }
+  header h1 small { color:var(--faint); font-weight:400; font-size:14px; }
+  .hsep { color:var(--border2); }
+  #goal { color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; font-size:13px; }
+  .pill { font:12px var(--mono); padding:3px 12px; border-radius:999px;
+    border:1px solid var(--border2); color:var(--dim); white-space:nowrap; }
+  #status { display:inline-flex; align-items:center; gap:7px; color:var(--text); }
+  #status::before { content:""; width:7px; height:7px; border-radius:999px; background:var(--faint); }
+  #status.running::before { background:var(--green); }
+  #status.done::before { background:var(--blue); }
+  #status.accepted::before { background:var(--amber); }
+  #status.stopped::before { background:var(--critic); }
+  #status.failed { background:var(--red); border-color:var(--red); color:#fff; }
+  #status.failed::before { background:#fff; }
+  #status.error { color:var(--red-t); border-style:dashed; border-color:rgba(229,72,77,.55); }
+  #status.error::before { background:var(--red-t); }
+  @media (prefers-reduced-motion: no-preference) {
+    #status.running::before { animation:pulse 1.6s infinite; }
+    @keyframes pulse { 50% { opacity:.25; } }
+  }
+  #filterPill { display:none; align-items:center; gap:7px; color:var(--text); padding-right:6px; }
+  #filterPill.on { display:inline-flex; }
+  #filterName { font-weight:600; }
+  #filterClear { cursor:pointer; width:16px; height:16px; border-radius:999px; background:#1f1f1f;
+    display:inline-flex; align-items:center; justify-content:center; font-size:10px; color:var(--dim); }
+  #filterClear:hover { background:var(--border2); color:#fff; }
+
+  /* ---------- feed ---------- */
+  #feedwrap { grid-area:feed; position:relative; min-width:0; }
+  #feed { position:absolute; inset:0; overflow-y:auto; padding:14px 20px 24px;
+    display:grid; grid-template-columns:max-content max-content 1fr; gap:0 18px;
+    align-content:start; font:12.5px/1.6 var(--mono); }
+  .entry { grid-column:1/-1; display:grid; grid-template-columns:subgrid;
+    padding:6px 10px; border-radius:6px; border:1px solid transparent; }
+  .entry:hover { background:var(--hover); }
+  .entry .time { color:var(--faint); font-size:11.5px; padding-top:1px; }
+  .entry .from { font-weight:600; cursor:pointer; overflow:hidden; text-overflow:ellipsis; }
+  .entry .from:hover { text-decoration:underline; text-underline-offset:3px; }
+  .entry[data-role=judge]  .from { color:var(--judge); }
+  .entry[data-role=worker] .from { color:var(--worker); }
+  .entry[data-role=critic] .from { color:var(--critic); }
+  .entry[data-role=human]  .from { color:var(--human); }
+  .entry[data-role=system] .from { color:var(--system); }
+  .entry[data-role=human] { background:rgba(47,209,128,.05); }
+  .entry.learning { background:rgba(47,209,128,.04); border-color:rgba(47,209,128,.3); }
+  .entry .body { min-width:0; display:grid; grid-template-columns:max-content 1fr; gap:0 10px; }
+  .entry .type { color:var(--dim); font:500 10px/1.5 var(--sans); letter-spacing:.04em;
+    border:1px solid var(--border2); border-radius:999px; padding:1px 8px; height:fit-content; white-space:nowrap; }
+  .entry .type.learning { color:var(--human); border-color:rgba(47,209,128,.4); }
+  .entry .text { display:block; color:var(--soft); white-space:pre-wrap; word-break:break-word; }
+  .entry .text.clamp { display:-webkit-box; -webkit-line-clamp:4; -webkit-box-orient:vertical; overflow:hidden; }
+  .morebtn { margin-top:4px; color:var(--faint); font:11.5px var(--sans); cursor:pointer; width:fit-content; }
+  .morebtn:hover { color:var(--text); }
+  .refs { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+  .refchip { font-size:11px; color:var(--text); background:var(--panel); border:1px solid var(--border2);
+    border-radius:6px; padding:2.5px 9px; cursor:pointer; display:inline-flex; gap:7px; align-items:center; }
+  .refchip::before { content:"▤"; color:var(--faint); }
+  .refchip:hover { border-color:var(--faint); background:var(--panel2); }
+  code { background:#1a1a1a; border:1px solid var(--border); border-radius:4px; padding:0 4px; font-size:.92em; font-family:var(--mono); }
+  .mention { color:#fff; font-weight:600; }
+  .wikilink { color:var(--blue); text-decoration:underline dotted; text-underline-offset:3px; cursor:pointer; }
+  /* phase dividers: round / final entries */
+  .entry.phase { display:flex; align-items:center; gap:12px; margin:16px 0 8px; padding:0 10px; border:none; background:none; }
+  .entry.phase:hover { background:none; }
+  .entry.phase .time { flex:none; }
+  .entry.phase .from { font-size:11.5px; color:var(--dim) !important; flex:none; }
+  .entry.phase .body { display:inline-flex; align-items:center; gap:10px; min-width:0; }
+  .entry.phase .type { color:var(--amber); border-color:rgba(245,166,35,.4); text-transform:uppercase; letter-spacing:.08em; }
+  .entry.phase .text { color:var(--text); font:600 12px var(--sans); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .entry.phase::after { content:""; flex:1; border-top:1px solid var(--border); }
+  #jumpPill { position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
+    font:600 12px var(--sans); color:var(--text); background:#1a1a1a; border:1px solid var(--border2);
+    border-radius:999px; padding:6px 16px; cursor:pointer; box-shadow:0 8px 24px rgba(0,0,0,.7); z-index:3; display:none; }
+  #jumpPill:hover { background:var(--border); border-color:var(--border3); }
+  #jumpPill.on { display:block; }
+
+  /* ---------- sidebar ---------- */
+  aside { grid-area:side; background:var(--bg); border-left:1px solid var(--border);
+    overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:20px; }
+  aside h2 { font:500 11px var(--sans); letter-spacing:.06em; color:var(--faint); text-transform:uppercase; }
+  .shead { display:flex; align-items:center; justify-content:space-between; margin-bottom:9px; }
+  .count { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--dim);
+    border:1px solid var(--border2); border-radius:999px; padding:1px 9px; }
+  .count::before { content:""; width:6px; height:6px; border-radius:999px; background:var(--green); }
+  @media (prefers-reduced-motion: no-preference) { .count::before { animation:pulse 1.6s infinite; } }
+  #agents { display:flex; flex-direction:column; gap:6px; }
+  .agent { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:9px 11px; cursor:pointer; }
+  .agent:hover { border-color:var(--border3); }
+  .agent .arow { display:flex; align-items:center; gap:8px; font:12px var(--mono); }
+  .agent b { font-weight:600; }
+  .agent[data-role=worker] b { color:var(--worker); } .agent[data-role=critic] b { color:var(--critic); }
+  .agent .role { color:var(--faint); font-size:10.5px; }
+  .agent .model { margin-left:auto; font:10px var(--sans); color:var(--dim); background:var(--bg);
+    border:1px solid var(--border2); border-radius:5px; padding:1px 6px; }
+  .agent .trow { display:flex; gap:8px; align-items:baseline; margin-top:4px; }
+  .agent .task { color:var(--dim); font:11.5px var(--mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .agent .live { color:var(--faint); font-size:10px; flex:none; }
+  .agent.none { cursor:default; border-style:dashed; text-align:center; color:var(--faint); font:11.5px var(--sans); line-height:1.6; }
+  .agent.none:hover { border-color:var(--border); }
+  #tree { font:12px var(--mono); display:flex; flex-direction:column; gap:1px; }
+  #tree .grp { color:var(--faint); font:500 10.5px var(--sans); margin:10px 0 3px; text-transform:uppercase; letter-spacing:.06em; }
+  #tree .grp:first-child { margin-top:0; }
+  #tree .fold { color:var(--dim); padding:3px 8px 1px; }
+  #tree .fold::before { content:"▾ "; color:var(--ghost); }
+  #tree a { display:block; color:var(--soft); text-decoration:none; padding:3px 8px; border-radius:6px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #tree a::before { content:"▤ "; color:var(--ghost); }
+  #tree a.sub { padding-left:26px; }
+  #tree a:hover { background:var(--hover); color:#fff; }
+  #tree .empty { display:block; background:var(--panel); border:1px dashed var(--border2); border-radius:8px;
+    padding:13px; text-align:center; color:var(--faint); font:11.5px/1.6 var(--sans); font-style:normal; margin-top:2px; }
+
+  /* ---------- viewer ---------- */
+  #viewer { position:fixed; inset:0 0 0 auto; width:min(680px,90vw); background:var(--panel);
+    border-left:1px solid var(--border); box-shadow:-16px 0 50px rgba(0,0,0,.7);
+    overflow-y:auto; z-index:10; padding:0 24px 22px; display:none; }
+  #viewer.open { display:block; }
+  #viewer .vhead { position:sticky; top:0; background:var(--panel); z-index:2;
+    display:flex; justify-content:space-between; align-items:center; gap:12px;
+    padding:16px 0 12px; margin-bottom:14px; border-bottom:1px solid var(--border); }
+  #vpath { font:12px var(--mono); color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #vclose { background:none; border:1px solid var(--border2); color:var(--dim); border-radius:6px;
+    padding:4px 12px; cursor:pointer; font-size:12px; }
+  #vclose:hover { border-color:var(--faint); color:#fff; }
+  #vbody { font-size:13.5px; line-height:1.75; color:var(--soft); max-width:600px; }
+  #vbody h1 { margin:10px 0 12px; font-size:22px; font-weight:650; color:#fff; letter-spacing:-.02em; }
+  #vbody h2 { margin:24px 0 8px; font-size:16px; font-weight:650; color:#fff; letter-spacing:-.01em; }
+  #vbody h3 { margin:18px 0 6px; font-size:14px; font-weight:650; color:#fff; }
+  #vbody p, #vbody ul, #vbody pre { margin:10px 0; }
+  #vbody li { margin:4px 0 4px 22px; }
+  #vbody pre { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:14px 16px;
+    overflow-x:auto; font:12px/1.6 var(--mono); color:var(--soft); }
+  #vbody .agtask { color:var(--dim); font-size:12.5px; font-style:normal; margin:2px 0 12px; }
+  #agstream { display:flex; flex-direction:column; gap:3px; font:12px/1.55 var(--mono); }
+  #agstream .act { display:grid; grid-template-columns:2px max-content 1fr; gap:11px;
+    padding:4px 10px 4px 6px; border-radius:6px; word-break:break-word; }
+  #agstream .act::before { content:""; background:var(--border2); border-radius:2px; opacity:.8; }
+  #agstream .act b { font-weight:600; white-space:nowrap; color:var(--dim); }
+  #agstream .act span { color:var(--dim); min-width:0; }
+  #agstream .act.tool::before { background:var(--blue); } #agstream .act.tool b { color:var(--blue); }
+  #agstream .act.tool span { color:var(--soft); }
+  #agstream .act.text { background:var(--hover); } #agstream .act.text::before { background:var(--soft); }
+  #agstream .act.text b, #agstream .act.text span { color:var(--soft); }
+  #agstream .act.info { background:rgba(245,166,35,.06); }
+  #agstream .act.info::before { background:var(--amber); }
+  #agstream .act.info b, #agstream .act.info span { color:var(--amber); }
+
+  /* ---------- composer ---------- */
+  footer { grid-area:footer; position:relative; display:flex; gap:10px; padding:14px 20px;
+    background:var(--bg); border-top:1px solid var(--border); align-items:stretch; }
+  .msgwrap { flex:1; display:flex; align-items:center; gap:10px; border:1px solid var(--border2);
+    background:var(--panel); border-radius:8px; padding:0 14px; }
+  .msgwrap:focus-within { border-color:var(--faint); }
+  #msg { flex:1; background:none; border:none; outline:none; color:var(--text);
+    font:12.5px var(--mono); height:38px; }
+  #msg::placeholder { color:var(--ghost); }
+  .kbd { color:var(--ghost); font-size:10.5px; border:1px solid var(--border2); border-radius:4px; padding:1px 6px; flex:none; }
+  footer button { border-radius:8px; padding:0 20px; font-weight:600; font-size:13px; cursor:pointer; display:flex; align-items:center; gap:8px; }
+  #send { background:#1a1a1a; color:var(--text); border:1px solid var(--border2); padding:0 22px; }
+  #send:hover { background:var(--border); border-color:var(--border3); }
+  .vr { width:1px; background:var(--border); margin:3px 6px; }
+  #stopBtn { background:none; border:1px solid rgba(229,72,77,.55); color:var(--red-t); }
+  #stopBtn:hover:not(:disabled) { background:rgba(229,72,77,.12); }
+  #stopBtn i { font-style:normal; font-size:10px; }
+  #acceptBtn { background:none; border:1px solid rgba(47,209,128,.5); color:var(--green); }
+  #acceptBtn:hover:not(:disabled) { background:rgba(47,209,128,.1); }
+  footer button:disabled { opacity:.35; cursor:default; }
+  #mention { position:absolute; bottom:66px; left:20px; background:var(--panel); border:1px solid var(--border2);
+    border-radius:10px; box-shadow:0 -10px 36px rgba(0,0,0,.8); overflow:hidden; z-index:20;
+    min-width:230px; padding:5px; display:none; }
+  #mention div { padding:6px 12px; border-radius:6px; cursor:pointer; font:12.5px var(--mono);
+    display:flex; justify-content:space-between; gap:16px; }
+  #mention div::after { content:"↵"; color:var(--faint); font-size:10.5px; }
+  #mention div:hover, #mention div.sel { background:#1f1f1f; }
+  #mention div[data-m=all], #mention div[data-m=HUMAN] { color:#fff; }
+  #mention div[data-m=judge] { color:var(--judge); }
+  #mention div.worker { color:var(--worker); } #mention div.critic { color:var(--critic); }
+
+  /* ---------- confirm (mock) ---------- */
+  #confirmWrap { position:fixed; inset:0; background:rgba(0,0,0,.6); backdrop-filter:blur(2px);
+    z-index:30; display:none; align-items:center; justify-content:center; }
+  #confirmWrap.on { display:flex; }
+  .cbox { background:var(--panel); border:1px solid var(--border2); border-radius:12px;
+    padding:20px 22px; width:380px; box-shadow:0 24px 70px rgba(0,0,0,.9); }
+  .cbox h3 { color:#fff; font-weight:600; font-size:15px; }
+  .cbox p { color:var(--dim); font-size:13px; margin:8px 0 16px; line-height:1.55; }
+  .cbtns { display:flex; gap:8px; justify-content:flex-end; font-size:13px; }
+  .cbtns button { border-radius:8px; padding:7px 15px; cursor:pointer; font-size:13px; }
+  .ccancel { background:none; color:var(--text); border:1px solid var(--border2); font-weight:500; }
+  .ccancel:hover { border-color:var(--faint); }
+  .cstop { color:#fff; background:var(--red); border:none; font-weight:600; }
+  .cstop:hover { background:#f2555a; }
+  .caccept { color:#000; background:var(--green); border:none; font-weight:600; }
+  .caccept:hover { background:#4adb92; }
+
+  @media (max-width:1100px) { body { grid-template-columns:1fr 250px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Swarm <small>Board</small></h1>
+  <span class="hsep">/</span>
+  <span id="goal" title=""></span>
+  <span class="pill" id="filterPill">filter: <b id="filterName"></b> <span id="filterClear">×</span></span>
+  <span class="pill" id="round">round —</span>
+  <span class="pill" id="status">connecting</span>
+</header>
+
+<div id="feedwrap">
+  <div id="feed" aria-live="polite"></div>
+  <div id="jumpPill">↓ new messages</div>
+</div>
+
+<aside>
+  <section>
+    <div class="shead"><h2>Agents</h2><span class="count" id="agentCount">0 live</span></div>
+    <div id="agents"></div>
+  </section>
+  <section>
+    <div class="shead"><h2>Wiki</h2></div>
+    <div id="tree"></div>
+  </section>
+</aside>
+
+<div id="viewer">
+  <div class="vhead"><code id="vpath"></code><button id="vclose">Close ⎋</button></div>
+  <div id="vbody"></div>
+</div>
+
+<footer>
+  <div id="mention"></div>
+  <div class="msgwrap">
+    <input id="msg" placeholder="Message the swarm as HUMAN — @ to address an agent, Enter to send" aria-label="Message to the swarm" autocomplete="off">
+    <span class="kbd">↵</span>
+  </div>
+  <button id="send">Post</button>
+  <div class="vr"></div>
+  <button id="stopBtn"><i>■</i>Stop run</button>
+  <button id="acceptBtn"><i>✓</i>Accept result</button>
+</footer>
+
+<div id="confirmWrap"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const feed = $('feed');
+let filterFrom = null;
+const seenFrom = new Set(['all', 'judge', 'HUMAN']);
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// Inline formatting: `code`, **bold**, @mentions, [[wiki links]].
+function fmtInline(s) {
+  return esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|\s)@([\w-]+)/g, '$1<span class="mention">@$2</span>')
+    .replace(/\[\[([^\]]+)\]\]/g, '<span class="wikilink" data-wl="$1">[[$1]]</span>');
+}
+
+// Tiny markdown renderer for the wiki viewer.
+function renderMd(src) {
+  const out = [];
+  const lines = src.split(/\r?\n/);
+  let inCode = false, buf = [];
+  const flushP = () => { if (buf.length) { out.push('<p>' + fmtInline(buf.join(' ')) + '</p>'); buf = []; } };
+  for (const line of lines) {
+    if (line.startsWith('```')) { flushP(); out.push(inCode ? '</pre>' : '<pre>'); inCode = !inCode; continue; }
+    if (inCode) { out.push(esc(line) + '\n'); continue; }
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    if (h) { flushP(); out.push(`<h${h[1].length}>` + fmtInline(h[2]) + `</h${h[1].length}>`); continue; }
+    if (/^\s*[-*]\s+/.test(line)) { flushP(); out.push('<li>' + fmtInline(line.replace(/^\s*[-*]\s+/, '')) + '</li>'); continue; }
+    if (!line.trim()) { flushP(); continue; }
+    buf.push(line);
+  }
+  flushP(); if (inCode) out.push('</pre>');
+  return out.join('');
+}
+
+function entryMatchesFilter(el) {
+  return !filterFrom || el.classList.contains('phase') ||
+    el.dataset.from === filterFrom || el.textContent.includes('@' + filterFrom) || el.textContent.includes('@all');
+}
+function applyFilter() {
+  document.querySelectorAll('.entry').forEach(el => { el.style.display = entryMatchesFilter(el) ? '' : 'none'; });
+  $('filterPill').classList.toggle('on', !!filterFrom);
+  if (filterFrom) $('filterName').textContent = filterFrom;
+}
+function setFilter(name) {
+  filterFrom = filterFrom === name ? null : name;
+  applyFilter();
+  if (!filterFrom) feed.scrollTop = feed.scrollHeight;
+}
+$('filterClear').onclick = () => { filterFrom = null; applyFilter(); };
+
+function nearBottom() { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80; }
+feed.addEventListener('scroll', () => $('jumpPill').classList.toggle('on', !nearBottom()));
+$('jumpPill').onclick = () => { feed.scrollTop = feed.scrollHeight; $('jumpPill').classList.remove('on'); };
+
+function addEntry(m) {
+  const stick = nearBottom();
+  const el = document.createElement('div');
+  el.className = 'entry';
+  el.dataset.role = m.role || 'system';
+  el.dataset.from = m.from || '';
+  if (m.from) seenFrom.add(m.from);
+  const phase = m.type === 'round' || m.type === 'final';
+  if (phase) el.classList.add('phase');
+  if (m.type === 'learning') el.classList.add('learning');
+  const refs = (m.refs || []).map(r => `<span class="refchip" data-ref="${esc(r)}">${esc(r)}</span>`).join('');
+  const lines = String(m.text || '').split('\n');
+  const long = !phase && lines.length > 5;
+  el.innerHTML =
+    `<span class="time">${esc((m.ts || '').slice(11, 19))}</span>` +
+    `<span class="from">${esc(m.from || '?')}</span>` +
+    `<div class="body"><span class="type ${esc(m.type || 'msg')}">${esc(m.type || 'msg')}</span>` +
+    `<div style="min-width:0"><span class="text${long ? ' clamp' : ''}">${fmtInline(m.text)}</span>` +
+    (long ? `<div class="morebtn">Show ${lines.length - 4} more lines</div>` : '') +
+    (refs ? `<div class="refs">${refs}</div>` : '') + `</div></div>`;
+  if (!entryMatchesFilter(el)) el.style.display = 'none';
+  feed.appendChild(el);
+  if (stick) feed.scrollTop = feed.scrollHeight;
+  else $('jumpPill').classList.add('on');
+}
+
+function setState(s) {
+  $('goal').textContent = s.goal || '';
+  $('goal').title = s.goal || '';
+  $('round').textContent = `round ${s.round ?? '—'}/${s.maxRounds ?? '—'}`;
+  const stEl = $('status');
+  stEl.textContent = s.status || '?';
+  stEl.className = 'pill';
+  stEl.classList.add({'state error':'error'}[s.status] || s.status || 'unknown');
+  (s.active || []).forEach(a => seenFrom.add(a.id));
+  $('agentCount').textContent = (s.active || []).length + ' live';
+  $('agents').innerHTML = (s.active || []).map(a =>
+    `<div class="agent" data-id="${esc(a.id)}" data-role="${esc(a.role)}" title="click → live view">` +
+    `<div class="arow"><b>${esc(a.id)}</b> <span class="role">${esc(a.role)}</span>` +
+    (a.model ? `<span class="model">${esc(a.model)}</span>` : '') + `</div>` +
+    `<div class="trow"><span class="task" title="${esc(a.task)}">${esc(a.task)}</span><span class="live">live ↗</span></div></div>`
+  ).join('') || '<div class="agent none">No active agents.<br><span style="color:var(--dim)">The judge spawns workers each round.</span></div>';
+  const done = ['done', 'stopped', 'failed', 'accepted'].includes(s.status);
+  $('stopBtn').disabled = done; $('acceptBtn').disabled = done;
+}
+
+function renderTree(t) {
+  const link = (scope, f, sub) =>
+    `<a href="#" class="${sub ? 'sub' : ''}" data-scope="${scope}" data-file="${esc(f)}">${esc(f.split('/').pop())}</a>`;
+  const group = (name, scope, files) => {
+    // folder-style grouping for path-like names
+    const flat = [], folders = {};
+    (files || []).forEach(f => {
+      const i = f.indexOf('/');
+      if (i < 0) flat.push(f); else (folders[f.slice(0, i + 1)] = folders[f.slice(0, i + 1)] || []).push(f);
+    });
+    let html = `<div class="grp">${name}</div>`;
+    flat.forEach(f => html += link(scope, f));
+    for (const dir of Object.keys(folders).sort()) {
+      html += `<div class="fold">${esc(dir)}</div>`;
+      folders[dir].forEach(f => html += link(scope, f, true));
+    }
+    if (!(files || []).length) html += '<span class="empty">Nothing published yet.<br>Agents write cross-run notes here.</span>';
+    return html;
+  };
+  $('tree').innerHTML =
+    group('run wiki', 'run', t.run) + group('artifacts', 'artifacts', t.artifacts) + group('global wiki', 'global', t.global);
+}
+
+function openWiki(scope, file) {
+  $('vpath').textContent = scope + ':' + file;
+  $('vbody').innerHTML = renderMd(DOCS[scope + ':' + file] ?? '# ' + file + '\n\nnot found');
+  $('viewer').classList.add('open');
+}
+function openAgentView(a) {
+  $('vpath').textContent = a.id + ' · ' + a.role + ' · ' + (a.model || 'inherit');
+  $('vbody').innerHTML = '<p class="agtask">' + esc(a.task || '') + '</p><div id="agstream"></div>';
+  $('viewer').classList.add('open');
+  const box = $('agstream');
+  (STREAMS[a.id] || []).forEach(ev => {
+    const d = document.createElement('div');
+    d.className = 'act ' + (ev.kind || 'text');
+    d.innerHTML = '<b>' + esc(ev.label) + '</b><span>' + esc(ev.detail) + '</span>';
+    box.appendChild(d);
+  });
+}
+$('vclose').onclick = () => $('viewer').classList.remove('open');
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('viewer').classList.remove('open'); });
+
+// clicks: agents, senders, ref chips, tree links, wiki links
+document.addEventListener('click', e => {
+  const ag = e.target.closest('#agents .agent');
+  if (ag && ag.dataset.id) { const a = AGENTS.find(x => x.id === ag.dataset.id); if (a) openAgentView(a); return; }
+  const fr = e.target.closest('.entry .from');
+  if (fr && !fr.closest('.phase')) { setFilter(fr.textContent); return; }
+  const more = e.target.closest('.morebtn');
+  if (more) {
+    const txt = more.parentElement.querySelector('.text');
+    if (!more.dataset.label) more.dataset.label = more.textContent;
+    const clamped = txt.classList.toggle('clamp');
+    more.textContent = clamped ? more.dataset.label : 'Show less';
+    return;
+  }
+  const ref = e.target.closest('[data-ref]');
+  if (ref) { const r = ref.dataset.ref;
+    if (r.startsWith('global:')) openWiki('global', r.slice(7));
+    else if (r.startsWith('artifacts/')) openWiki('artifacts', r.slice(10));
+    else openWiki('run', r.replace(/^wiki\//, ''));
+    return; }
+  const tl = e.target.closest('#tree a');
+  if (tl) { e.preventDefault(); openWiki(tl.dataset.scope, tl.dataset.file); return; }
+  const wl = e.target.closest('.wikilink');
+  if (wl) { const hit = WLMAP[wl.dataset.wl.toLowerCase()]; if (hit) openWiki(hit[0], hit[1]); }
+});
+
+// composer + @mention autocomplete
+function post(text) {
+  addEntry({ ts:'2026-07-23T' + new Date().toTimeString().slice(0, 8), from:'HUMAN', role:'human', type:'msg', text });
+  feed.scrollTop = feed.scrollHeight;
+}
+$('send').onclick = () => { const t = $('msg').value.trim(); if (t) { post(t); $('msg').value = ''; $('mention').style.display = 'none'; } };
+$('msg').addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('send').onclick();
+  if (e.key === 'Escape') $('mention').style.display = 'none';
+});
+$('msg').addEventListener('input', () => {
+  const m = $('msg').value.match(/(^|\s)@([\w-]*)$/);
+  const box = $('mention');
+  if (!m) { box.style.display = 'none'; return; }
+  const pre = m[2].toLowerCase();
+  const cands = [...seenFrom].filter(x => x.toLowerCase().startsWith(pre)).sort().slice(0, 8);
+  if (!cands.length) { box.style.display = 'none'; return; }
+  const roleOf = id => (AGENTS.find(a => a.id === id) || {}).role || '';
+  box.innerHTML = cands.map((c, i) => `<div data-m="${esc(c)}" class="${roleOf(c)}${i === 0 ? ' sel' : ''}">@${esc(c)}</div>`).join('');
+  box.style.display = 'block';
+});
+$('mention').addEventListener('mousedown', e => {
+  const d = e.target.closest('[data-m]');
+  if (!d) return;
+  e.preventDefault();
+  $('msg').value = $('msg').value.replace(/@[\w-]*$/, '@' + d.dataset.m + ' ');
+  $('mention').style.display = 'none';
+  $('msg').focus();
+});
+
+// STOP / ACCEPT with styled confirms (mock: updates local state)
+function askConfirm(kind) {
+  const stop = kind === 'stop';
+  const w = $('confirmWrap');
+  w.innerHTML = `<div class="cbox">
+    <h3>${stop ? 'Stop the run?' : 'Accept the result?'}</h3>
+    <p>${stop ? 'All agents halt immediately. The board and wiki are preserved.'
+              : 'The current draft of <code>artifacts/final-report.md</code> is finalized and the run ends.'}</p>
+    <div class="cbtns"><button class="ccancel">Cancel</button>
+    <button class="${stop ? 'cstop' : 'caccept'}">${stop ? 'Stop run' : 'Accept'}</button></div></div>`;
+  w.classList.add('on');
+  w.onclick = e => { if (e.target === w || e.target.closest('.ccancel')) w.classList.remove('on'); };
+  w.querySelector(stop ? '.cstop' : '.caccept').onclick = () => {
+    w.classList.remove('on');
+    STATE.status = stop ? 'stopped' : 'accepted';
+    setState(STATE);
+  };
+}
+$('stopBtn').onclick = () => askConfirm('stop');
+$('acceptBtn').onclick = () => askConfirm('accept');
+
+/* ================= MOCK DATA (replace with live SSE layer on merge) ================= */
+const AGENTS = [
+  { id:'w1-researcher', role:'worker', model:'sonnet', task:'survey zero-dep routing approaches', transcript:true },
+  { id:'w2-analyst', role:'worker', model:'sonnet', task:'benchmark URLPattern vs regex vs trie', transcript:true },
+  { id:'w3-synthesizer', role:'worker', model:'opus', task:'draft the final brief from findings', transcript:true },
+  { id:'critic-1', role:'critic', model:'haiku', task:'review claims against evidence', transcript:true },
+];
+const STATE = {
+  goal:'Produce a one-page brief comparing 3 approaches to zero-dependency HTTP routing in Node, with a recommendation',
+  round:2, maxRounds:8, status:'running', active:AGENTS,
+};
+const BOARD = [
+  { ts:'2026-07-23T14:02:11', from:'system', role:'system', type:'system', text:'run started · judge=sonnet · max 8 rounds · board /tmp/swarm/board.ndjson' },
+  { ts:'2026-07-23T14:02:13', from:'judge', role:'judge', type:'round', text:'Round 1/8 — recon: survey approaches, gather evidence' },
+  { ts:'2026-07-23T14:02:14', from:'judge', role:'judge', type:'task', text:'@w1-researcher survey zero-dependency routing approaches in Node core + community; write findings to [[findings]]. @w2-analyst benchmark `URLPattern` vs compiled-regex table vs radix trie on 10/100/1k routes.' },
+  { ts:'2026-07-23T14:02:19', from:'w1-researcher', role:'worker', type:'msg', text:'Ack. Scanning Node 22 docs + stdlib. Candidates: native `URLPattern`, hand-rolled regex table, radix-trie matcher. Noting flag requirements per version.' },
+  { ts:'2026-07-23T14:03:02', from:'w2-analyst', role:'worker', type:'result', text:'Bench harness up: `node:test` + `perf_hooks`, fresh process per case, 5 warmup / 20 measured iterations.\nRoutes generated from httpbin-style spec: static, param and wildcard mixes.\nPreliminary p50 lookup at 1k routes:\n  radix-trie   0.9µs   regex-table  2.1µs   URLPattern  14.7µs (no compile cache)\nCaveat: warm path only — cold numbers pending per critic-1.\nHarness pins CPU governor to performance; jitter under 3%.\nRoute corpus: 60% static, 30% single-param, 10% wildcard.\nEach case runs in a fresh `node` process to avoid JIT bleed.\nRaw CSVs land next to the findings file.\np99 tracks p50 within 2x everywhere except URLPattern cold.\nWill publish the cold table after the re-run.', refs:['wiki/findings/urlpattern-routing.md'] },
+  { ts:'2026-07-23T14:03:40', from:'w1-researcher', role:'worker', type:'result', text:'Findings written → [[urlpattern-routing]]. Key: `URLPattern` is WHATWG-standard and flag-free since Node 23; regex tables win on portability; tries win past ~500 routes.', refs:['wiki/findings/urlpattern-routing.md','wiki/findings/trie-router.md'] },
+  { ts:'2026-07-23T14:04:05', from:'critic-1', role:'critic', type:'msg', text:'@w2-analyst cold-start parse cost is excluded — precompiling the regex table before timing skews `ops/sec` against URLPattern. Re-run with a per-process cold path or label the table "warm only".' },
+  { ts:'2026-07-23T14:04:31', from:'HUMAN', role:'human', type:'msg', text:'@all Jaki macie cel?' },
+  { ts:'2026-07-23T14:04:33', from:'judge', role:'judge', type:'msg', text:'@HUMAN cel: one-page brief — 3 zero-dependency HTTP-routing approaches for Node, z rekomendacją. Teraz: round 1, zbieramy dowody.' },
+  { ts:'2026-07-23T14:05:10', from:'w2-analyst', role:'worker', type:'learning', text:'`URLPattern` compile cost dominates under ~200 routes — cache compiled patterns at module scope and the gap vs regex tables nearly closes.' },
+  { ts:'2026-07-23T14:05:48', from:'judge', role:'judge', type:'round', text:'Round 2/8 — synthesize: draft the brief, review for rigor' },
+  { ts:'2026-07-23T14:05:50', from:'judge', role:'judge', type:'task', text:'@w3-synthesizer draft [[final-report]]: 3 approaches × (perf, ergonomics, maintenance), recommendation up top. @critic-1 review the draft against w2 numbers.' },
+  { ts:'2026-07-23T14:06:22', from:'w3-synthesizer', role:'worker', type:'msg', text:'Drafting. Structure: verdict first, comparison matrix, then per-approach notes. Pulling numbers from [[urlpattern-routing]].' },
+  { ts:'2026-07-23T14:07:03', from:'w3-synthesizer', role:'worker', type:'result', text:'Draft complete — 418 words. Recommendation: compiled-regex table by default; radix-trie past ~500 routes; `URLPattern` once Node 23+ is your floor.', refs:['artifacts/final-report.md'] },
+];
+const TREE = {
+  run:['INDEX.md','findings/urlpattern-routing.md','findings/regex-table.md','findings/trie-router.md','approaches/comparison-matrix.md'],
+  artifacts:['final-report.md'],
+  global:[],
+};
+const DOCS = {
+  'run:INDEX.md':
+`# Run index
+
+Working memory for this run. The judge and workers link everything they produce here.
+
+## Findings
+- [[urlpattern-routing]] — native WHATWG matcher, compile-cost data
+- [[regex-table]] — hand-rolled compiled regex approach
+- [[trie-router]] — radix-trie matcher, scaling crossover
+
+## Approaches
+- [[comparison-matrix]] — 3 approaches × perf / ergonomics / maintenance
+
+## Artifacts
+- [[final-report]] — the deliverable, drafted in round 2`,
+  'run:findings/urlpattern-routing.md':
+`# URLPattern routing
+
+Native \`URLPattern\` is the WHATWG standard pattern matcher — flag-free since Node 23, behind \`--experimental-urlpattern\` on 22. It matches path, search and hash in one object and returns named groups directly.
+
+## Compile cost
+
+Construction dominates: each pattern compiles to an internal regex set. Measured on the 1k-route corpus:
+
+\`\`\`
+cold p50 (first hit)      warm p50 (cached)
+radix-trie     1.1µs      radix-trie    0.9µs
+regex-table    9.8µs      regex-table   2.1µs
+URLPattern    41.2µs      URLPattern    3.2µs
+\`\`\`
+
+- Cache compiled patterns at module scope — the warm gap vs regex tables nearly closes.
+- Groups API is the ergonomic win: no manual capture-index bookkeeping.
+- Portability: identical semantics in browsers, Deno, Cloudflare Workers.
+
+Scaling behavior past ~500 routes favors tries — see [[trie-router]] for the crossover data.`,
+  'run:findings/regex-table.md':
+`# Compiled regex table
+
+The zero-dependency workhorse: compile every route to one anonymous regex with named groups at startup, then match in registration order.
+
+\`\`\`
+const routes = [
+  { m: 'GET', re: /^\\/users\\/(?<id>[^/]+)$/,        h: getUser },
+  { m: 'GET', re: /^\\/users\\/(?<id>[^/]+)\\/posts$/, h: getPosts },
+];
+const hit = routes.find(r => r.m === req.method && r.re.test(path));
+\`\`\`
+
+- Warm p50 at 1k routes: 2.1µs — linear scan, but V8 regex is fast.
+- Zero abstractions: the whole router is ~30 lines, trivially debuggable.
+- Weakness: O(n) scan and no automatic route-order safety — see [[comparison-matrix]].`,
+  'run:findings/trie-router.md':
+`# Radix-trie router
+
+Segment-split trie with static > param > wildcard precedence per node. Constant-ish lookup regardless of route count.
+
+\`\`\`
+routes   trie p50   regex p50
+  10      0.4µs      0.3µs
+ 100      0.7µs      0.9µs
+ 500      0.8µs      1.6µs   <- crossover
+1000      0.9µs      2.1µs
+\`\`\`
+
+- Crossover vs the regex table sits around ~500 routes on the corpus.
+- ~120 lines for insert + match with param capture — the most code of the three.
+
+Compile-cost comparison with the native matcher lives in [[urlpattern-routing]].`,
+  'run:approaches/comparison-matrix.md':
+`# Comparison matrix
+
+Three approaches × the criteria the judge set in round 1. Numbers from the 1k-route corpus, warm unless noted.
+
+\`\`\`
+                 regex-table   radix-trie   URLPattern
+warm p50            2.1µs         0.9µs        3.2µs
+cold p50            9.8µs         1.1µs       41.2µs
+lines of code        ~30          ~120           ~15
+node floor           any           any        22 (flag) / 23
+standard semantics    no            no          WHATWG
+\`\`\`
+
+- Ergonomics: URLPattern wins (named groups, standard semantics).
+- Raw speed at scale: trie wins past ~500 routes.
+- Simplicity per line: regex table wins below that.`,
+  'artifacts:final-report.md':
+`# Zero-dependency HTTP routing in Node — brief
+
+**Recommendation:** compiled-regex table by default; switch to a radix-trie past ~500 routes; adopt native \`URLPattern\` once Node 23+ is your floor.
+
+## The three approaches
+
+- Compiled regex table — ~30 lines, warm p50 2.1µs at 1k routes; O(n) scan. [[regex-table]]
+- Radix trie — ~120 lines, p50 0.9µs flat; crossover vs regex at ~500 routes. [[trie-router]]
+- Native URLPattern — ~15 lines, WHATWG semantics; compile cost demands module-scope caching. [[urlpattern-routing]]
+
+## Evidence
+
+Full matrix in [[comparison-matrix]]. Cold-start numbers were re-run per critic-1 with a fresh process per case.
+
+## Caveats
+
+- Benchmarks are lookup-only; parsing and dispatch overhead dominate real request time.
+- URLPattern on Node 22 requires a flag — unacceptable for library code until 23 is the floor.`,
+};
+const WLMAP = {
+  'findings':['run','INDEX.md'],
+  'urlpattern-routing':['run','findings/urlpattern-routing.md'],
+  'regex-table':['run','findings/regex-table.md'],
+  'trie-router':['run','findings/trie-router.md'],
+  'comparison-matrix':['run','approaches/comparison-matrix.md'],
+  'final-report':['artifacts','final-report.md'],
+};
+const STREAMS = {
+  'w1-researcher':[
+    { kind:'tool', label:'web_search', detail:'node urlpattern flag versions' },
+    { kind:'result', label:'out', detail:'8 results · nodejs.org changelog v23.0.0, WHATWG urlpattern spec, 3 blog posts' },
+    { kind:'text', label:'says', detail:'Confirming the flag story: 22 needs --experimental-urlpattern, 23 ships it unflagged.' },
+    { kind:'tool', label:'read_file', detail:'corpus/community-routers.md' },
+    { kind:'text', label:'says', detail:'Community zero-dep routers cluster into exactly our three families — nothing novel to add.' },
+    { kind:'tool', label:'write_file', detail:'wiki/findings/urlpattern-routing.md · 3.1 kB' },
+    { kind:'result', label:'out', detail:'ok' },
+    { kind:'info', label:'done', detail:'survey complete — three approaches documented with version constraints' }],
+  'w2-analyst':[
+    { kind:'tool', label:'bash', detail:'node bench/run.mjs --routes 1000 --cold' },
+    { kind:'result', label:'out', detail:'1000 routes · cold p50: trie 1.1µs · regex 9.8µs (compile) · urlpattern 41.2µs' },
+    { kind:'text', label:'says', detail:'Cold numbers change the picture — the regex table pays 9.8µs on first hit. Adding a cold-start column to findings.' },
+    { kind:'tool', label:'read_file', detail:'wiki/findings/urlpattern-routing.md' },
+    { kind:'tool', label:'edit_file', detail:'wiki/findings/urlpattern-routing.md · +18 lines (cold-start section)' },
+    { kind:'result', label:'out', detail:'ok · wrote 2.4 kB' },
+    { kind:'text', label:'says', detail:'Re-running the warm suite to confirm the cache-hit path is unchanged after the edit.' },
+    { kind:'tool', label:'bash', detail:'node bench/run.mjs --routes 1000 --warm' },
+    { kind:'result', label:'out', detail:'warm p50 unchanged: trie 0.9µs · regex 2.1µs · urlpattern 3.2µs (cached)' },
+    { kind:'info', label:'done', detail:'benchmarks complete — cold + warm documented, findings updated for critic review' }],
+  'w3-synthesizer':[
+    { kind:'tool', label:'read_file', detail:'wiki/findings/urlpattern-routing.md' },
+    { kind:'tool', label:'read_file', detail:'wiki/approaches/comparison-matrix.md' },
+    { kind:'text', label:'says', detail:'Verdict-first structure: recommendation, matrix, then one paragraph per approach. Target under 450 words.' },
+    { kind:'tool', label:'write_file', detail:'artifacts/final-report.md · draft 1' },
+    { kind:'result', label:'out', detail:'ok · 418 words' },
+    { kind:'text', label:'says', detail:'Cross-checking every number in the draft against w2\u2019s cold and warm tables.' },
+    { kind:'info', label:'done', detail:'draft ready for critic-1 — posted refs to the board' }],
+  'critic-1':[
+    { kind:'tool', label:'read_file', detail:'artifacts/final-report.md' },
+    { kind:'text', label:'says', detail:'Checking each claim against the findings — flag versions, crossover point, cold-start caveat.' },
+    { kind:'tool', label:'grep', detail:'"µs" artifacts/final-report.md wiki/findings/' },
+    { kind:'result', label:'out', detail:'12 matches · all figures trace to the bench CSVs' },
+    { kind:'text', label:'says', detail:'One weak spot: the brief says "routing is rarely the bottleneck" without a source. Requesting a caveat line instead of the claim.' },
+    { kind:'info', label:'done', detail:'review posted — 1 revision requested, evidence otherwise sound' }],
+};
+
+/* ---- MOCK WIRING: replace with EventSource('/events') + fetch on merge ---- */
+setState(STATE);
+renderTree(TREE);
+BOARD.forEach(addEntry);
+feed.scrollTop = feed.scrollHeight;
+</script>
+</body>
+</html>

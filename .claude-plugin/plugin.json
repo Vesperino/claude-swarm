@@ -1,0 +1,10 @@
+{
+  "name": "swarm",
+  "displayName": "Swarm",
+  "version": "1.0.0",
+  "description": "Judge-led autonomous multi-agent swarm with a live board UI, shared llm-wiki memory and an auto-improvement loop. Watch agents talk, steer them mid-run, stop or accept from the browser.",
+  "author": { "name": "Arkadiusz Bialecki" },
+  "license": "MIT",
+  "keywords": ["agents", "swarm", "orchestration", "multi-agent", "board", "memory"],
+  "skills": "./skills"
+}
