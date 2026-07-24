@@ -54,6 +54,11 @@ Global wiki: `~/.claude/swarm/wiki` (Windows: `%USERPROFILE%\.claude\swarm\wiki`
    eat backslashes and one `\P` makes the whole file unparseable for the browser.
 5. Bootstrap the global wiki if missing: create `~/.claude/swarm/wiki/lessons/` and an
    `INDEX.md` with just a `# Swarm lessons` header.
+   **Fork freshness check:** if THIS skill is a project copy (a `SOURCE.md` sits next to this
+   SKILL.md), compare its recorded hash with the source (`git -C <source path from SOURCE.md>
+   rev-parse HEAD`, best effort). If they differ, tell the user in ONE line — "project swarm
+   copy is behind its source; run /swarm-init to update" — and continue; never auto-update
+   a fork.
 6. Start the server with the Bash tool, `run_in_background: true`:
    `node "<skillDir>/server.mjs" --run "<RUN_DIR>" --port 4780`
    Poll `RUN_DIR/server.json` (up to 10s), read the real port (it may differ from 4780 when
